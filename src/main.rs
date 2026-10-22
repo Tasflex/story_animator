@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::{Json, Router};
+use futures::stream::{self, StreamExt, TryStreamExt};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -41,7 +42,11 @@ impl IntoResponse for AppError {
             AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        tracing::error!(error = %self, "request failed");
+        // Don't log expected 4xx at ERROR level — that hides real 500s.
+        match &self {
+            AppError::BadRequest(msg) => tracing::warn!(error = %msg, "bad request"),
+            _ => tracing::error!(error = %self, "request failed"),
+        }
         (status, Json(json!({ "error": self.to_string() }))).into_response()
     }
 }
@@ -54,19 +59,23 @@ type AppResult<T> = Result<T, AppError>;
 
 struct Config {
     gemini_api_key: String,
+    gemini_model: String,
     elevenlabs_api_key: String,
     deepseek_api_key: String,
     manim_bin: String,
     ffmpeg_bin: String,
     ffprobe_bin: String,
     // Quality / cinematic controls
-    manim_quality: String,          // ql | qm | qh | qk
-    manim_resolution: String,       // e.g. "1920,1080"
+    manim_quality: String,    // ql | qm | qh | qk
+    manim_resolution: String, // e.g. "1920,1080"
     manim_fps: u32,
+    manim_disable_caching: bool,
     elevenlabs_model: String,
     background_music: Option<PathBuf>,
     // Retry budget for LLM -> Manim code failure recovery
     manim_max_retries: u32,
+    // Concurrency cap for per-scene TTS calls
+    tts_concurrency: usize,
 }
 
 impl Config {
@@ -82,6 +91,7 @@ impl Config {
 
         Ok(Config {
             gemini_api_key: required("GEMINI_API_KEY")?,
+            gemini_model: optional("GEMINI_MODEL", "gemini-2.5-flash"),
             elevenlabs_api_key: required("ELEVENLABS_API_KEY")?,
             deepseek_api_key: required("DEEPSEEK_API_KEY")?,
             manim_bin: optional("MANIM_BIN", "manim"),
@@ -90,9 +100,11 @@ impl Config {
             manim_quality: optional("MANIM_QUALITY", "qk"),
             manim_resolution: optional("MANIM_RESOLUTION", "1920,1080"),
             manim_fps: optional("MANIM_FPS", "60").parse().unwrap_or(60),
+            manim_disable_caching: optional("MANIM_DISABLE_CACHING", "0") == "1",
             elevenlabs_model: optional("ELEVENLABS_MODEL", "eleven_turbo_v2_5"),
             background_music: env::var("BACKGROUND_MUSIC").ok().map(PathBuf::from),
             manim_max_retries: optional("MANIM_MAX_RETRIES", "1").parse().unwrap_or(1),
+            tts_concurrency: optional("TTS_CONCURRENCY", "4").parse().unwrap_or(4),
         })
     }
 }
@@ -128,7 +140,13 @@ fn storage_join(sub: &str, name: &str) -> PathBuf {
 }
 
 fn validate_voice_id(id: &str) -> AppResult<()> {
-    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric()) || id.len() > 64 {
+    // ElevenLabs custom/cloned voice IDs may contain `_` and `-`.
+    if id.is_empty()
+        || id.len() > 64
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return Err(AppError::BadRequest("invalid voice_id".into()));
     }
     Ok(())
@@ -140,7 +158,9 @@ fn validate_topic(topic: &str) -> AppResult<()> {
         return Err(AppError::BadRequest("topic is empty".into()));
     }
     if trimmed.len() > 2000 {
-        return Err(AppError::BadRequest("topic too long (max 2000 chars)".into()));
+        return Err(AppError::BadRequest(
+            "topic too long (max 2000 chars)".into(),
+        ));
     }
     Ok(())
 }
@@ -183,11 +203,11 @@ fn strip_json_fence(s: &str) -> String {
 
 async fn svc_generate_storyboard(state: &AppState, topic: &str) -> AppResult<Storyboard> {
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={}",
-        state.config.gemini_api_key
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+        state.config.gemini_model, state.config.gemini_api_key
     );
 
-        let prompt = format!(
+    let prompt = format!(
         r##"You are a senior creative director for a premium educational video channel
 in the style of 3Blue1Brown, Veritasium, and Kurzgesagt.
 
@@ -281,6 +301,21 @@ async fn svc_generate_audio(
         return Err(AppError::ElevenLabs(format!("HTTP {s}: {t}")));
     }
 
+    // Guard against a 200 that isn't actually audio (rare, but produces
+    // cryptic ffprobe errors downstream).
+    let ct = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if !ct.starts_with("audio/") {
+        let t = response.text().await.unwrap_or_default();
+        return Err(AppError::ElevenLabs(format!(
+            "unexpected content-type '{ct}': {t}"
+        )));
+    }
+
     let bytes = response.bytes().await?;
     if bytes.is_empty() {
         return Err(AppError::ElevenLabs("empty audio body".into()));
@@ -297,6 +332,8 @@ fn build_manim_prompt(
     previous_error: Option<&str>,
 ) -> AppResult<String> {
     let total: f64 = scene_durations.iter().sum();
+    // Aim slightly under the audio length so the tail freezes on the last
+    // frame rather than cutting the animation short mid-narration.
     let target = (total * 0.97).max(1.0);
 
     let scenes_json = serde_json::to_string_pretty(&board.scenes)
@@ -334,7 +371,7 @@ Hard requirements:
 5. Every scene must have motion: Create, Write, FadeIn, Transform,
    ReplacementTransform, MoveAlongPath, Rotate, ScaleInPlace, ApplyWave,
    LaggedStart, etc. NO static slides.
-6. Set `self.camera.background_color = "{bg}"` in `construct`.
+6. Set `self.camera.background_color = "{bg}"` as the first line of `construct`.
 7. Use `self.camera.frame.save_state()` and
    `self.camera.frame.animate.scale(...)` for cinematic zooms. This requires the
    `MovingCameraScene` base class — do not subclass plain `Scene`.
@@ -343,7 +380,36 @@ Hard requirements:
 9. Add a title card at the start and a fade-out at the end.
 10. Imports must be only: `from manim import *`.
 11. Return ONLY the Python code inside a single ```python fenced block.
-    No prose, no markdown outside the fence.{retry_note}
+    No prose, no markdown outside the fence.
+
+MOBJECT CONSTRUCTION RULES (violations crash Manim — read carefully):
+
+12. `Line`, `Arrow`, `DashedLine`, `Vector` take EXACTLY TWO positional arguments:
+    `Line(start_point, end_point)`.
+    To build a point from two components, use `+` arithmetic on direction
+    vectors, NOT separate arguments:
+      WRONG:  Line(LEFT*3, UP*2, RIGHT*2, DOWN)       # 4 positional args -> crash
+      WRONG:  Arrow(x1, y1, x2, y2)                   # 4 positional args -> crash
+      RIGHT:  Line(start=LEFT*3 + UP*2, end=RIGHT*2 + DOWN)
+      RIGHT:  Line(LEFT*3 + UP*2, RIGHT*2 + DOWN)
+      RIGHT:  Arrow(ORIGIN, RIGHT*3)
+    The numpy error "truth value of an array with more than one element is
+    ambiguous" is almost always caused by passing 3+ positional args to Line
+    or Arrow.
+
+13. When building grids, loops, or repeated shapes, never write
+    `Line(x1, y1, x2, y2)`. Either:
+      - `Line(start=[x1, y1, 0], end=[x2, y2, 0])`, or
+      - compute each endpoint as `RIGHT*x + UP*y` and pass it as one argument.
+
+14. `Circle`, `Square`, `Rectangle`, `Dot`, `Triangle`, `Polygon` take ONE
+    positional argument (or none) plus keyword args. `Rectangle(width=..., height=...)`
+    is correct; `Rectangle(4, 3)` is not.
+
+15. `Text("...")` takes a string. `Text(x, y)` with two positional args is
+    wrong — use `Text("...").move_to(RIGHT*x + UP*y)`.
+
+{retry_note}
 
 Storyboard style: {style}
 Title: {title}
@@ -399,26 +465,70 @@ fn sanitize_manim_code(mut code: String) -> String {
             "class StoryAnimation(MovingCameraScene)",
         );
     }
+    code
+}
 
-    // Ensure a background color is set.
-    if !code.contains("background_color") {
-        code = code.replacen(
-            "class StoryAnimation(MovingCameraScene):",
-            "class StoryAnimation(MovingCameraScene):\n        self.camera.background_color = \"#0B1026\"",
-            1,
-        );
+/// Reject code that will almost certainly crash Manim before we waste a
+/// render on it. Coarse pattern-matching: catches the common 4-arg `Line` /
+/// `Arrow` / `DashedLine` bug that produces the numpy "truth value of an
+/// array" error.
+fn validate_manim_code(code: &str) -> AppResult<()> {
+    // Match e.g.  Line(A, B, C, D)  /  Arrow(x1, y1, x2, y2)
+    // where each argument contains no nested parens. False positives on
+    // deeply nested calls are acceptable — they cost one DeepSeek round-trip,
+    // not an 80s render.
+    let re = regex::Regex::new(
+        r"(?m)\b(Line|Arrow|DashedLine|Vector)\s*\(\s*[^()]*,[^()]*,[^()]*,[^()]*\)",
+    )
+    .unwrap();
+    if let Some(m) = re.find(code) {
+        // Extract the offending line for a clearer error message.
+        let line_start = code[..m.start()].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line_end = code[m.end()..]
+            .find('\n')
+            .map(|i| m.end() + i)
+            .unwrap_or(code.len());
+        let offending = &code[line_start..line_end];
+        return Err(AppError::DeepSeek(format!(
+            "generated code passes 4+ positional args to a mobject constructor \
+             (likely Line/Arrow); use start=/end= keywords or `+` arithmetic. \
+             Offending line: {offending}"
+        )));
+    }
+    Ok(())
+}
+
+/// Insert `self.camera.background_color = "..."` as the first line of
+/// `construct`, preserving indentation. Never injects at class-body level.
+fn ensure_background(mut code: String, bg: &str) -> String {
+    if code.contains("background_color") {
+        return code;
+    }
+    let needle = "def construct(self):";
+    if let Some(pos) = code.find(needle) {
+        let line_start = code[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let indent: String = code[line_start..pos]
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .collect();
+        let body_indent = format!("{indent}    ");
+        let inject = format!("\n{body_indent}self.camera.background_color = \"{bg}\"");
+        code.insert_str(pos + needle.len(), &inject);
     }
     code
 }
 
-async fn svc_request_manim_code(
-    state: &AppState,
-    prompt: &str,
-) -> AppResult<String> {
+fn is_moving_camera_scene(code: &str) -> bool {
+    // Tolerant of extra whitespace / comments on the class line.
+    let re = regex::Regex::new(r"class\s+StoryAnimation\s*\(\s*MovingCameraScene\s*\)").unwrap();
+    re.is_match(code)
+}
+
+async fn svc_request_manim_code(state: &AppState, prompt: &str) -> AppResult<String> {
     let body = json!({
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "You are a world-class Manim developer. Output only valid, runnable Python. Never use LaTeX. Never use non-standard color constants."},
+            {"role": "system", "content": "You are a world-class Manim developer. Output only valid, runnable Python. Never use LaTeX. Never use non-standard color constants. Never pass more than two positional arguments to Line, Arrow, DashedLine, or Vector."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.6
@@ -452,16 +562,16 @@ async fn svc_request_manim_code(
 
     let code = sanitize_manim_code(code);
 
-        if !code.contains("class StoryAnimation(MovingCameraScene)") {
+    // Run structural checks BEFORE the ~80s Manim render so a bad attempt
+    // costs only the DeepSeek round-trip.
+    validate_manim_code(&code)?;
+
+    let code = ensure_background(code, "#0B1026");
+
+    if !is_moving_camera_scene(&code) {
         return Err(AppError::DeepSeek(
             "generated code must define `class StoryAnimation(MovingCameraScene):`".into(),
         ));
-    }
-
-    if !code.contains("class StoryAnimation") {
-        return Err(AppError::DeepSeek(
-            "generated code does not define class StoryAnimation".into(),
-        ));   
     }
 
     Ok(code)
@@ -479,7 +589,20 @@ async fn svc_generate_manim_with_render(
 
     for attempt in 0..attempts {
         let prompt = build_manim_prompt(board, scene_durations, last_err.as_deref())?;
-        let code = svc_request_manim_code(state, &prompt).await?;
+        let code = match svc_request_manim_code(state, &prompt).await {
+            Ok(c) => c,
+            Err(e) => {
+                // Validator / prompt-level rejection: still worth retrying,
+                // but don't bother writing the file.
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    error = %e,
+                    "manim code rejected before render, retrying"
+                );
+                last_err = Some(e.to_string());
+                continue;
+            }
+        };
 
         let rel_path = storage_join("scripts", &format!("{}.py", uuid::Uuid::new_v4()));
         tokio::fs::write(&rel_path, code.as_bytes()).await?;
@@ -489,7 +612,14 @@ async fn svc_generate_manim_with_render(
         match svc_render(state, &rel_path.to_string_lossy()).await {
             Ok(video_path) => return Ok(video_path),
             Err(e) => {
-                tracing::warn!(attempt = attempt + 1, error = %e, "manim render failed, retrying");
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    error = %e,
+                    "manim render failed, retrying"
+                );
+                // Clean up the failed attempt's script so storage/ doesn't grow
+                // unbounded across retries.
+                let _ = tokio::fs::remove_file(&rel_path).await;
                 last_err = Some(e.to_string());
             }
         }
@@ -522,6 +652,8 @@ async fn svc_render(state: &AppState, script_path: &str) -> AppResult<String> {
         .and_then(|f| f.to_str())
         .ok_or_else(|| AppError::BadRequest("invalid filename".into()))?;
 
+    // Ensure the output dir exists, then canonicalize for Manim.
+    tokio::fs::create_dir_all("storage/output").await?;
     let media_dir = std::fs::canonicalize("storage/output")
         .map_err(|e| AppError::Render(format!("cannot resolve output dir: {e}")))?;
     let media_dir_arg = media_dir.to_string_lossy().replace('\\', "/");
@@ -530,8 +662,8 @@ async fn svc_render(state: &AppState, script_path: &str) -> AppResult<String> {
     let res = state.config.manim_resolution.clone();
     let fps = state.config.manim_fps.to_string();
 
-    let output = Command::new(&state.config.manim_bin)
-        .current_dir(work_dir)
+    let mut cmd = Command::new(&state.config.manim_bin);
+    cmd.current_dir(work_dir)
         .arg(file_name)
         .arg("StoryAnimation")
         .arg(&quality_flag)
@@ -542,8 +674,12 @@ async fn svc_render(state: &AppState, script_path: &str) -> AppResult<String> {
         .arg("-o")
         .arg(format!("{stem}.mp4"))
         .arg("--media_dir")
-        .arg(&media_dir_arg)
-        .arg("--disable_caching")
+        .arg(&media_dir_arg);
+    if state.config.manim_disable_caching {
+        cmd.arg("--disable_caching");
+    }
+
+    let output = cmd
         .output()
         .await
         .map_err(|e| AppError::Render(format!("failed to spawn manim: {e}")))?;
@@ -586,6 +722,13 @@ async fn svc_render(state: &AppState, script_path: &str) -> AppResult<String> {
     Ok(video_path.to_string_lossy().into_owned())
 }
 
+/// Combine the rendered Manim video with the narration audio (and optional
+/// background music).
+///
+/// CRITICAL: the video is padded with `tpad=stop_mode=clone` ONLY up to the
+/// audio duration, then hard-trimmed to exactly that duration. The old code
+/// used `stop_duration=999`, which froze the last frame for 999 seconds and
+/// produced 17-minute files with a silent still-image tail.
 async fn svc_combine(
     state: &AppState,
     video_path: &str,
@@ -593,6 +736,20 @@ async fn svc_combine(
 ) -> AppResult<String> {
     let video = safe_storage_path(video_path)?;
     let audio = safe_storage_path(audio_path)?;
+
+    // Probe the real audio duration so we can bound the video pad/trim.
+    let audio_dur = svc_probe_duration(state, &audio.to_string_lossy()).await?;
+    if !(audio_dur.is_finite() && audio_dur > 0.0) {
+        return Err(AppError::Ffmpeg(format!(
+            "invalid audio duration: {audio_dur}"
+        )));
+    }
+    let dur = format!("{audio_dur:.3}");
+    tracing::info!(
+        audio_duration_secs = audio_dur,
+        "combine: bounding output to audio length"
+    );
+
     let out = storage_join("output", &format!("final_{}.mp4", uuid::Uuid::new_v4()));
 
     let has_music = state
@@ -608,23 +765,32 @@ async fn svc_combine(
     let filter: String;
     if has_music {
         let music = state.config.background_music.as_ref().unwrap();
-        cmd.arg("-i").arg(music);
-        filter = concat!(
-            "[0:v]tpad=stop_mode=clone:stop_duration=999,",
-            "eq=contrast=1.05:saturation=1.08,vignette=PI/5[v];",
-            "[2:a]volume=0.18,aloop=loop=-1:size=2e9[music];",
-            "[1:a]loudnorm=I=-16:TP=-1.5:LRA=11[voice];",
-            "[music][voice]sidechaincompress=threshold=0.05:ratio=8:attack=5:release=250[ducked];",
-            "[voice][ducked]amix=inputs=2:duration=first:dropout_transition=2[a]"
-        )
-        .to_string();
+        // Loop the music at the input stage so the demuxer restarts the file
+        // cheaply — far more robust than `aloop` inside a filter graph.
+        cmd.arg("-stream_loop").arg("-1").arg("-i").arg(music);
+
+        filter = format!(
+            concat!(
+                "[0:v]eq=contrast=1.05:saturation=1.08,vignette=PI/5,",
+                "tpad=stop_mode=clone:stop_duration={dur},",
+                "trim=duration={dur},setpts=PTS-STARTPTS[v];",
+                "[1:a]loudnorm=I=-16:TP=-1.5:LRA=11[voice];",
+                "[2:a]volume=0.18,atrim=duration={dur},asetpts=PTS-STARTPTS[music];",
+                "[music][voice]sidechaincompress=threshold=0.05:ratio=8:attack=5:release=250[ducked];",
+                "[voice][ducked]amix=inputs=2:duration=first:dropout_transition=2[a]"
+            ),
+            dur = dur
+        );
     } else {
-        filter = concat!(
-            "[0:v]tpad=stop_mode=clone:stop_duration=999,",
-            "eq=contrast=1.05:saturation=1.08,vignette=PI/5[v];",
-            "[1:a]loudnorm=I=-16:TP=-1.5:LRA=11[a]"
-        )
-        .to_string();
+        filter = format!(
+            concat!(
+                "[0:v]eq=contrast=1.05:saturation=1.08,vignette=PI/5,",
+                "tpad=stop_mode=clone:stop_duration={dur},",
+                "trim=duration={dur},setpts=PTS-STARTPTS[v];",
+                "[1:a]loudnorm=I=-16:TP=-1.5:LRA=11[a]"
+            ),
+            dur = dur
+        );
     }
 
     cmd.arg("-filter_complex")
@@ -647,8 +813,20 @@ async fn svc_combine(
         .arg("aac")
         .arg("-b:a")
         .arg("192k")
-        .arg("-shortest")
+        .arg("-t")
+        .arg(&dur) // belt-and-suspenders: hard cap container duration
         .arg(&out);
+
+    // Debug trace so any future duration regression is visible in logs.
+    tracing::debug!(
+        video = %video.display(),
+        audio = %audio.display(),
+        audio_dur = audio_dur,
+        dur = %dur,
+        has_music = has_music,
+        out = %out.display(),
+        "combine: ffmpeg args prepared"
+    );
 
     let output = cmd
         .output()
@@ -725,10 +903,14 @@ async fn concat_audio(state: &AppState, clips: &[PathBuf], out: &Path) -> AppRes
 
     let output = Command::new(&state.config.ffmpeg_bin)
         .arg("-y")
-        .arg("-f").arg("concat")
-        .arg("-safe").arg("0")
-        .arg("-i").arg(&list_abs)
-        .arg("-c").arg("copy")
+        .arg("-f")
+        .arg("concat")
+        .arg("-safe")
+        .arg("0")
+        .arg("-i")
+        .arg(&list_abs)
+        .arg("-c")
+        .arg("copy")
         .arg(out)
         .output()
         .await
@@ -793,6 +975,7 @@ fn default_duration() -> f64 {
 
 #[derive(Serialize)]
 struct ManimResponse {
+    /// Path to the generated Python script (NOT a rendered video).
     file_path: String,
 }
 
@@ -938,14 +1121,33 @@ async fn handle_generate(
         "pipeline: storyboard ready"
     );
 
-    tracing::info!("pipeline: per-scene audio");
-    let mut clips: Vec<PathBuf> = Vec::with_capacity(board.scenes.len());
-    let mut durations: Vec<f64> = Vec::with_capacity(board.scenes.len());
-    for (i, scene) in board.scenes.iter().enumerate() {
-        let p = svc_generate_audio(&state, &scene.narration, &payload.voice_id).await?;
-        let d = svc_probe_duration(&state, &p).await?;
+    // Generate all scene audio concurrently (bounded), preserving scene order.
+    tracing::info!(
+        concurrency = state.config.tts_concurrency,
+        "pipeline: per-scene audio (concurrent)"
+    );
+    let conc = state.config.tts_concurrency.max(1);
+    let mut per_scene: Vec<(usize, PathBuf, f64)> = stream::iter(
+        board.scenes.iter().cloned().enumerate().map(|(i, scene)| {
+            let state = state.clone();
+            let voice_id = payload.voice_id.clone();
+            async move {
+                let p = svc_generate_audio(&state, &scene.narration, &voice_id).await?;
+                let d = svc_probe_duration(&state, &p).await?;
+                Ok::<_, AppError>((i, PathBuf::from(p), d))
+            }
+        }),
+    )
+    .buffer_unordered(conc)
+    .try_collect::<Vec<_>>()
+    .await?;
+    per_scene.sort_by_key(|(i, _, _)| *i);
+
+    let mut clips: Vec<PathBuf> = Vec::with_capacity(per_scene.len());
+    let mut durations: Vec<f64> = Vec::with_capacity(per_scene.len());
+    for (i, path, d) in per_scene {
         tracing::info!(scene = i, duration_secs = d, "pipeline: scene audio ready");
-        clips.push(PathBuf::from(p));
+        clips.push(path);
         durations.push(d);
     }
 
@@ -999,6 +1201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState {
         client: Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(300))
             .build()?,
         config: Arc::new(config),
