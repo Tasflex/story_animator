@@ -1,0 +1,23 @@
+"""
+Python bindings to mapbox/earcut.hpp
+-----------------------
+
+.. currentmodule:: mapbox_earcut._core
+
+.. autosummary::
+   :toctree: _generate
+"""
+
+from typing import Annotated
+
+import numpy
+from numpy.typing import NDArray
+
+
+def triangulate_int32(arg0: Annotated[NDArray[numpy.int32], dict(shape=(None, 2), device='cpu')], arg1: Annotated[NDArray[numpy.uint32], dict(shape=(None,), device='cpu')], /) -> Annotated[NDArray[numpy.uint32], dict(shape=(None,))]: ...
+
+def triangulate_int64(arg0: Annotated[NDArray[numpy.int64], dict(shape=(None, 2), device='cpu')], arg1: Annotated[NDArray[numpy.uint32], dict(shape=(None,), device='cpu')], /) -> Annotated[NDArray[numpy.uint32], dict(shape=(None,))]: ...
+
+def triangulate_float32(arg0: Annotated[NDArray[numpy.float32], dict(shape=(None, 2), device='cpu')], arg1: Annotated[NDArray[numpy.uint32], dict(shape=(None,), device='cpu')], /) -> Annotated[NDArray[numpy.uint32], dict(shape=(None,))]: ...
+
+def triangulate_float64(arg0: Annotated[NDArray[numpy.float64], dict(shape=(None, 2), device='cpu')], arg1: Annotated[NDArray[numpy.uint32], dict(shape=(None,), device='cpu')], /) -> Annotated[NDArray[numpy.uint32], dict(shape=(None,))]: ...

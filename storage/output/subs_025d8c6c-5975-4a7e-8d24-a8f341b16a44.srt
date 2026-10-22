@@ -1,0 +1,48 @@
+1
+00:00:00,000 --> 00:00:10,449
+Inside your brain, eighty-six billion neurons communicate through a continuous storm
+
+2
+00:00:00,000 --> 00:00:10,449
+of electrical signals. For decades, capturing these faint thoughts seemed
+
+3
+00:00:00,000 --> 00:00:10,449
+practically impossible.
+
+4
+00:00:10,449 --> 00:00:17,229
+When a neuron fires, ions rush across its membrane, creating a tiny voltage spike
+
+5
+00:00:10,449 --> 00:00:17,229
+known as an action potential.
+
+6
+00:00:17,229 --> 00:00:28,421
+Sensors on the scalp only hear a blurred echo of this activity. Neural links bypass
+
+7
+00:00:17,229 --> 00:00:28,421
+the skull entirely, placing microscopic, thread-like electrodes directly adjacent to
+
+8
+00:00:17,229 --> 00:00:28,421
+individual neurons.
+
+9
+00:00:28,421 --> 00:00:36,780
+An onboard microchip amplifies these microscopic electrical spikes, converting
+
+10
+00:00:28,421 --> 00:00:36,780
+continuous analog waves into clean digital arrays of numerical data.
+
+11
+00:00:36,780 --> 00:00:44,350
+Machine learning algorithms decode these vector patterns in real time, turning the
+
+12
+00:00:36,780 --> 00:00:44,350
+firing of specific neurons directly into movement on a screen.
+
