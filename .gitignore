@@ -1,4 +1,4 @@
-/target
-/storage
-/venv
+target/
+storage/
+venv/
 .env

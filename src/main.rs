@@ -84,8 +84,7 @@ impl Quality {
             "qk" => Ok(Quality::FourK),
             other => Err(format!(
                 "MANIM_QUALITY must be one of ql/qm/qh/qk, got {other:?}. \
-                 '-V' is not a valid Manim quality flag and produces \
-                 \"Error: No such option '-V'\"."
+                 '-V' is not a valid Manim quality flag."
             )),
         }
     }
@@ -164,8 +163,6 @@ impl Config {
     fn from_env() -> Result<Self, String> {
         dotenv::dotenv().ok();
 
-        // Cairo only. Reject stale opengl configs so the cinematic camera
-        // API (self.camera.frame.*) never runs under a renderer that lacks it.
         if let Ok(v) = env::var("MANIM_RENDERER") {
             let v = v.trim();
             if !v.is_empty() && v != "cairo" {
@@ -202,7 +199,7 @@ impl Config {
 
         Ok(Config {
             gemini_api_key: env_required("GEMINI_API_KEY")?,
-            gemini_model: env_default("GEMINI_MODEL", "gemini-2.5-flash"),
+            gemini_model: env_default("GEMINI_MODEL", "gemini-3.5-flash"),
             elevenlabs_api_key: env_required("ELEVENLABS_API_KEY")?,
             deepseek_api_key: env_required("DEEPSEEK_API_KEY")?,
             manim_bin: env_bare_exe("MANIM_BIN", "manim")?,
@@ -320,70 +317,177 @@ fn strip_json_fence(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Subtitles
+// Palette normalization — Gemini does not guarantee 4 hex colors
 // ---------------------------------------------------------------------------
 
-fn srt_timestamp(secs: f64) -> String {
-    let total_ms = (secs * 1000.0).round() as u64;
-    let ms = total_ms % 1000;
-    let total_s = total_ms / 1000;
-    let s = total_s % 60;
-    let total_m = total_s / 60;
-    let m = total_m % 60;
-    let h = total_m / 60;
-    format!("{:02}:{:02}:{:02},{:03}", h, m, s, ms)
+const FALLBACK_BG: &str = "#0B1026";
+const FALLBACK_INK: &str = "#F4F1DE";
+const FALLBACK_ACCENT: &str = "#FFB703";
+const FALLBACK_WARN: &str = "#E63946";
+
+fn is_hex_color(s: &str) -> bool {
+    let s = s.trim();
+    s.len() == 7 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
-fn build_srt(board: &Storyboard, durations: &[f64]) -> String {
-    let mut out = String::new();
-    let mut t0 = 0.0_f64;
-    let mut idx = 1;
+fn luminance_hex(s: &str) -> f64 {
+    let t = s.trim().trim_start_matches('#');
+    if t.len() < 6 {
+        return 0.0;
+    }
+    let r = u8::from_str_radix(&t[0..2], 16).unwrap_or(0) as f64;
+    let g = u8::from_str_radix(&t[2..4], 16).unwrap_or(0) as f64;
+    let b = u8::from_str_radix(&t[4..6], 16).unwrap_or(0) as f64;
+    (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
+}
 
+/// Return exactly 4 valid hex colors: [BG, INK, ACCENT, WARN].
+/// Missing or invalid entries are replaced with fallbacks. Also forces BG
+/// near-black or near-white so a mid-tone bg cannot slip through.
+fn normalize_palette(raw: &[String]) -> [String; 4] {
+    let mut out: [Option<String>; 4] = [None, None, None, None];
+    for (i, c) in raw.iter().take(4).enumerate() {
+        if is_hex_color(c) {
+            out[i] = Some(c.trim().to_uppercase());
+        }
+    }
+    let bg = out[0].clone().unwrap_or_else(|| FALLBACK_BG.to_string());
+    let bg_lum = luminance_hex(&bg);
+    let bg = if bg_lum < 0.15 || bg_lum > 0.85 {
+        bg
+    } else {
+        FALLBACK_BG.to_string()
+    };
+    let ink = out[1].clone().unwrap_or_else(|| FALLBACK_INK.to_string());
+    let accent = out[2].clone().unwrap_or_else(|| FALLBACK_ACCENT.to_string());
+    let warn = out[3].clone().unwrap_or_else(|| FALLBACK_WARN.to_string());
+    [bg, ink, accent, warn]
+}
+
+fn pick_background(board: &Storyboard) -> String {
+    let raw = board
+        .scenes
+        .first()
+        .map(|s| s.palette.clone())
+        .unwrap_or_default();
+    normalize_palette(&raw)[0].clone()
+}
+
+// ---------------------------------------------------------------------------
+// Subtitles — phrase-weighted chunking + styled ASS burn-in
+// ---------------------------------------------------------------------------
+
+const MAX_CUE_CHARS: usize = 42;
+const MAX_CUE_LINES: usize = 2;
+const MIN_CUE_SECS: f64 = 0.9;
+
+fn chunk_scene_into_cues(text: &str, dur: f64) -> Vec<(f64, f64, String)> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    if words.is_empty() || dur <= 0.0 {
+        return vec![];
+    }
+
+    let weights: Vec<f64> = words
+        .iter()
+        .map(|w| {
+            let base = w.chars().count().max(1) as f64;
+            let bonus = if w.ends_with(['.', '!', '?']) {
+                3.0
+            } else if w.ends_with([',', ';', ':']) {
+                1.5
+            } else {
+                0.0
+            };
+            base + bonus
+        })
+        .collect();
+    let total_w: f64 = weights.iter().sum();
+    let secs_per_w = dur / total_w;
+
+    let target_chars = MAX_CUE_CHARS * MAX_CUE_LINES;
+    let mut cues: Vec<(f64, f64, String)> = Vec::new();
+    let mut i = 0;
+    let mut cursor_t = 0.0_f64;
+
+    while i < words.len() {
+        let start_t = cursor_t;
+        let mut chars = 0usize;
+        let mut j = i;
+        let mut cue_w = 0.0_f64;
+        while j < words.len() {
+            let w_len = words[j].chars().count() + 1;
+            if chars + w_len > target_chars && j > i {
+                break;
+            }
+            chars += w_len;
+            cue_w += weights[j];
+            j += 1;
+            if chars >= target_chars / 2 && words[j - 1].ends_with(['.', '!', '?']) {
+                break;
+            }
+        }
+
+        let end_t = start_t + cue_w * secs_per_w;
+        let mut cue = words[i..j].join(" ");
+        if cue.chars().count() > MAX_CUE_CHARS {
+            if let Some(bp) = cue
+                .char_indices()
+                .take_while(|(idx, _)| *idx < MAX_CUE_CHARS)
+                .filter(|(_, c)| *c == ' ')
+                .map(|(idx, _)| idx)
+                .last()
+            {
+                cue = format!("{}\n{}", &cue[..bp], cue[bp + 1..].trim());
+            }
+        }
+
+        cues.push((start_t, end_t.max(start_t + MIN_CUE_SECS), cue));
+        cursor_t = end_t;
+        i = j;
+    }
+
+    if let Some(last) = cues.last_mut() {
+        last.1 = last.1.min(dur).max(last.0 + 0.3);
+    }
+    cues
+}
+
+fn build_ass(board: &Storyboard, durations: &[f64], font: &str, font_size: u32) -> String {
+    let mut out = String::new();
+    out.push_str("[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\nWrapStyle: 2\nScaledBorderAndShadow: yes\n\n");
+    out.push_str("[V4+ Styles]\n");
+    out.push_str("Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n");
+    out.push_str(&format!(
+        "Style: Caption,{font},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,3,1.5,2,120,120,80,1\n\n"
+    ));
+    out.push_str("[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n");
+
+    let ass_ts = |s: f64| {
+        let cs = (s * 100.0).round() as u64;
+        format!(
+            "{}:{:02}:{:02}.{:02}",
+            cs / 360_000,
+            (cs / 6_000) % 60,
+            (cs / 100) % 60,
+            cs % 100
+        )
+    };
+
+    let mut t0 = 0.0_f64;
     for (i, scene) in board.scenes.iter().enumerate() {
         let dur = durations.get(i).copied().unwrap_or(0.0);
-        if dur <= 0.0 {
-            continue;
-        }
-        let text = scene.narration.trim();
-        if text.is_empty() {
-            t0 += dur;
-            continue;
-        }
-
-        let cues: Vec<String> = if text.len() > 120 {
-            let mid = text.len() / 2;
-            let split_at = text[..mid]
-                .rfind(|c: char| c == '.' || c == '?' || c == '!')
-                .map(|p| p + 1)
-                .unwrap_or(mid);
-            vec![
-                text[..split_at].trim().to_string(),
-                text[split_at..].trim().to_string(),
-            ]
-        } else {
-            vec![text.to_string()]
-        };
-
-        let n = cues.len();
-        for (j, cue) in cues.iter().enumerate() {
-            if cue.is_empty() {
-                continue;
-            }
-            let cue_start = t0 + dur * (j as f64) / (n as f64);
-            let cue_end = t0 + dur * ((j + 1) as f64) / (n as f64);
+        for (s, e, text) in chunk_scene_into_cues(scene.narration.trim(), dur) {
+            let body = text.replace('\n', "\\N");
             let _ = writeln!(
                 out,
-                "{}\n{} --> {}\n{}\n",
-                idx,
-                srt_timestamp(cue_start),
-                srt_timestamp(cue_end),
-                cue
+                "Dialogue: 0,{},{},Caption,,0,0,0,,{{\\fad(150,150)}}{}",
+                ass_ts(t0 + s),
+                ass_ts(t0 + e),
+                body
             );
-            idx += 1;
         }
         t0 += dur;
     }
-
     out
 }
 
@@ -412,16 +516,19 @@ Return ONLY valid JSON matching this schema:
       "narration": "1-3 spoken sentences, TTS-ready, no stage directions, no emojis",
       "visual": "a SHOT LIST the animator can literally build. Name concrete manim objects and motion: 'white Dot at ORIGIN -> Create -> ReplacementTransform to Arrow -> camera push 0.7x on arrow tip -> Write label next_to arrow end'. Every scene must name at least one Transform/ReplacementTransform and one camera or highlight move.",
       "mood": "one word",
-      "palette": ["#RRGGBB", "#RRGGBB", "#RRGGBB"]
+      "palette": ["#RRGGBB", "#RRGGBB", "#RRGGBB", "#RRGGBB"]
     }}
   ]
 }}
 
 Rules:
 - 5 to 8 scenes. Each scene is 4-10 seconds of narration.
+- EVERY scene MUST have a palette array of EXACTLY FOUR hex colors
+  ["#RRGGBB", "#RRGGBB", "#RRGGBB", "#RRGGBB"] — no more, no less.
 - The FIRST palette color of scene 1 becomes the video background. It MUST be near-black
   (#0B1026, #111116, #14121A) OR near-white (#FAFAFA, #F4F1DE). Never mid-tone blue/green/red.
 - The SECOND palette color is the primary ink (text + main shape) and must contrast the bg.
+- The THIRD is the accent (arrows, highlights). The FOURTH is a warning/secondary accent.
 - Reuse 2-3 colors across the whole video.
 - Ideas build: hook -> setup -> turn -> insight -> payoff.
 - VARY compositions: never repeat the same layout twice in a row.
@@ -525,13 +632,14 @@ async fn svc_generate_audio(state: &AppState, script: &str, voice_id: &str) -> A
 }
 
 // ---------------------------------------------------------------------------
-// Premium Manim prompt
+// Premium Manim prompt — with opacity layering and salience guidance
 // ---------------------------------------------------------------------------
 
 const PREMIUM_EXAMPLES: &str = r##"
 # =========================================================================
 # REFERENCE: a "premium" Manim scene. Pattern-match the idioms below.
 # Camera animation is ALWAYS self.camera.frame.*, never self.frame.*
+# Layout uses alignment helpers, never magic LEFT*x + UP*y coordinates.
 # =========================================================================
 from manim import *
 
@@ -540,40 +648,35 @@ class PremiumReference(MovingCameraScene):
         BG, INK, ACCENT, WARN = "#0B1026", "#F4F1DE", "#FFB703", "#E63946"
         self.camera.background_color = BG
 
-        dot   = Dot(ORIGIN, color=INK)
-        ring  = Circle(radius=0.6, color=ACCENT, stroke_width=3)
-        arrow = Arrow(ORIGIN, RIGHT*2 + UP*1.5, color=ACCENT, buff=0)
-        self.play(FadeIn(dot, scale=0.5))
-        self.play(ReplacementTransform(dot, ring))
-        self.play(ReplacementTransform(ring, arrow))
+        # --- TITLE region (top, y = +3.2, small) ---
+        title = Text("The Idea", color=INK, font_size=40).to_edge(UP, buff=0.6)
+        underline = Line(title.get_left(), title.get_right(), color=ACCENT, stroke_width=2)
+        underline.next_to(title, DOWN, buff=0.15)
+        self.play(FadeIn(title, shift=UP*0.2), Create(underline))
 
-        path = ArcBetweenPoints(arrow.get_end(), arrow.get_end() + LEFT*3, angle=-PI/2)
-        orb  = Dot(arrow.get_end(), color=WARN)
-        self.play(MoveAlongPath(orb, path), run_time=2.0, rate_func=smooth)
+        # --- STAGE region (ORIGIN, max radius 2.5) ---
+        node = Circle(radius=0.9, color=ACCENT, stroke_width=4).move_to(ORIGIN)
+        label = Text("core", color=INK).move_to(node.get_center())
+        self.play(GrowFromCenter(node), FadeIn(label))
 
-        t = ValueTracker(0.0)
-        live = always_redraw(
-            lambda: DecimalNumber(t.get_value(), num_decimal_places=1)
-            .set_color(ACCENT).to_corner(UR)
-        )
-        self.add(live)
-        self.play(t.animate.set_value(42.0), run_time=2.0, rate_func=smooth)
+        # Satellites arranged symmetrically — NEVER hand-place.
+        labels = VGroup(*[Text(t, color=INK, font_size=28) for t in ["a", "b", "c"]])
+        labels.arrange(RIGHT, buff=1.2).next_to(node, DOWN, buff=1.4)
+        arrows = VGroup(*[
+            Arrow(node.get_bottom(), l.get_top(), color=WARN, buff=0.1, stroke_width=3)
+            for l in labels
+        ])
+        self.play(LaggedStart(*[GrowArrow(a) for a in arrows], lag_ratio=0.15))
+        self.play(LaggedStart(*[FadeIn(l, shift=UP*0.1) for l in labels], lag_ratio=0.15))
 
-        # CINEMATIC CAMERA — Cairo / MovingCameraScene idiom
+        # Camera push on the node — Cairo / MovingCameraScene idiom.
         self.camera.frame.save_state()
-        self.play(self.camera.frame.animate.scale(0.6).move_to(live.get_center()))
+        self.play(self.camera.frame.animate.scale(0.55).move_to(node.get_center()), run_time=1.2)
+        self.play(Indicate(node, color=WARN, scale_factor=1.15), run_time=1.0)
+        self.play(self.camera.frame.animate.restore(), run_time=1.0)
 
-        box = SurroundingRectangle(live, color=ACCENT, buff=0.15)
-        self.play(Create(box))
-        self.play(Indicate(live, color=ACCENT, scale_factor=1.2))
-
-        self.play(self.camera.frame.animate.restore(), run_time=1.0,
-                  rate_func=there_and_back)
-
-        line = Line(LEFT*3, RIGHT*3, color=INK)
-        brace = Brace(line, DOWN, color=ACCENT)
-        label = Text("x", color=ACCENT).next_to(brace, DOWN, buff=0.1)
-        self.play(Create(line), GrowFromCenter(brace), FadeIn(label))
+        # Closing composition: pull back, keep the concept centered.
+        self.play(self.camera.frame.animate.scale(1.25), run_time=1.4)
 "##;
 
 fn build_manim_prompt(
@@ -589,11 +692,14 @@ fn build_manim_prompt(
     let scenes_json = serde_json::to_string_pretty(&board.scenes)
         .map_err(|e| AppError::DeepSeek(format!("serialize storyboard: {e}")))?;
     let durations_json = serde_json::to_string(scene_durations).unwrap_or_default();
-    let palette = board
+
+    let raw_palette = board
         .scenes
         .first()
         .map(|s| s.palette.clone())
         .unwrap_or_default();
+    let palette = normalize_palette(&raw_palette);
+    let (bg_c, ink_c, accent_c, warn_c) = (&palette[0], &palette[1], &palette[2], &palette[3]);
 
     let retry_note = match previous_error {
         Some(err) => format!(
@@ -622,34 +728,50 @@ Write ONE Python file that renders a cinematic explanation in the style "{style}
 Hard requirements:
 
 1. Define exactly one scene class: `class StoryAnimation(MovingCameraScene):`
-2. Target total runtime ~ {target:.2} seconds. Use `self.next_section("scene_i")` per scene.
-   Capture `section_start = self.renderer.time` right after each `next_section`, then
-   finish each section with:
-   `self.wait(max(0.0, TARGET_I - (self.renderer.time - section_start)))`
-3. Colors: declare `BG, INK, ACCENT, WARN = "<bg>", "<ink>", "<accent>", "<warn>"` at top of construct.
-   `self.camera.background_color = BG` as first executable line.
+2. Each scene i has target duration T_i from the durations array. Wrap every scene in:
+              self.next_section(f"scene_{{i}}")
+       _t0 = self.renderer.time
+       ... your animations for scene i ...
+       _rem = T_i - (self.renderer.time - _t0)
+       if _rem > 0.05:
+           self.wait(_rem)
+   If _rem <= 0.05 the animations already filled the slot — do NOT call wait().
+   `self.wait(0)` raises "duration of 0 <= 0 seconds", so the `if _rem > 0.05` guard
+   is MANDATORY. Never write `self.wait(max(0.0, ...))`.
+3. Colors: the FIRST line inside construct MUST be exactly:
+       BG, INK, ACCENT, WARN = "{bg_c}", "{ink_c}", "{accent_c}", "{warn_c}"
+   Do not change these values. Do not add or remove names. Four values, four names.
+   The NEXT line MUST be: `self.camera.background_color = BG`.
 4. NO Tex, MathTex, or any LaTeX. Allowed mobjects: Text, VGroup, Circle, Square,
    Rectangle, Line, Arrow, Dot, Polygon, RegularPolygon, RoundedRectangle, Arc,
    Ellipse, Triangle, Annulus, SurroundingRectangle, Brace, NumberLine, Axes,
-   DecimalNumber, ArcBetweenPoints, DashedLine, ValueTracker, Typst.
+   DecimalNumber, ArcBetweenPoints, DashedLine, ValueTracker, Typst,
+   Graph, Matrix, ComplexPlane, ParametricFunction, VectorField, StreamLines,
+   BarChart, Table, Dodecahedron.
+   You are NOT limited to primitives — use the full Manim toolkit where it serves the explanation.
 4b. NEVER call `brace.get_text(...)` or `brace.get_tex(...)`. Use
     `label = Text("x").next_to(brace, DOWN, buff=0.1)` and `FadeIn(label)`.
 {typst_rule}
-5. TECHNIQUE DENSITY CONTRACT — graded. Must contain:
+5. TECHNIQUE DENSITY CONTRACT — prefer, where natural:
    (a) >=3 Transform or ReplacementTransform chains,
    (b) >=1 of MoveAlongPath / ValueTracker+always_redraw / Axes.plot,
    (c) >=1 camera save_state + scale/move_to + restore using `self.camera.frame`,
    (d) >=1 SurroundingRectangle + Indicate pairing,
    (e) >=1 Brace / NumberLine / Axes,
    (f) >=1 rate_func=there_and_back or overshoot.
-6. No `self.wait(x)` with x > 0.5 except the padding wait at the end of a section.
+   These are signals of craft. They are not mandatory — deviate when a different
+   technique serves the explanation better.
+6. `self.wait(...)` is only valid in TWO places:
+   (a) the guarded trailing padding wait in rule 2, and
+   (b) NOWHERE ELSE inside a scene. Between `self.play(...)` calls, animate instead.
+   Never write self.wait(0) or self.wait(max(0.0, ...)).
 7. Group text into VGroups with arrange(DOWN, buff=0.3); animate the group.
 8. LAST frame must be composed (transform into closing title, or pull back),
    not FadeOut+Write.
 9. Imports: `from manim import *`
 10. Return ONLY one ```python fenced block.
 
-CAMERA API — MANDATORY (this is the #1 source of runtime crashes):
+CAMERA API — MANDATORY:
 
 11. The renderer is Cairo. The ONLY valid camera animation surface is
     `self.camera.frame`. Use it exactly like this:
@@ -657,7 +779,8 @@ CAMERA API — MANDATORY (this is the #1 source of runtime crashes):
         self.play(self.camera.frame.animate.scale(0.6).move_to(focus.get_center()))
         self.play(self.camera.frame.animate.restore())
     To zoom in: scale(<1). To zoom out: scale(>1). To pan: `.move_to(point)`.
-    Combined: `self.play(self.camera.frame.animate.scale(0.7).move_to(target))`.
+    Every `save_state()` MUST have a matching `restore()` (or `Restore(self.camera.frame)`)
+    within the same scene. Do not leave the camera zoomed at the end of a scene.
 12. NEVER reference `self.frame` — that attribute does NOT exist on a Scene
     and will crash the render with:
         AttributeError: 'StoryAnimation' object has no attribute 'frame'
@@ -671,11 +794,51 @@ MOBJECT RULES:
 14. Circle/Square/Rectangle/Dot/Triangle/Polygon take ONE positional arg or none.
 15. Text("...") takes a string; position with .move_to(RIGHT*x + UP*y).
 
+VISUAL SALIENCE — GUIDANCE, NOT LAW:
+
+16. Assign every mobject an implicit salience tier:
+    - Primary focus (what the narration is about): full opacity, accent color or bright ink.
+    - Contextual support (labels, secondary shapes, connecting lines): reduced opacity
+      via `.set_opacity(0.4)` or a desaturated color.
+    - Structural scaffolding (axes, grids, bounding boxes, reference lines):
+      `.set_opacity(0.15)` so they recede.
+    A viewer's eye should have one obvious target at every moment. If you introduce
+    a second element of equal visual weight, differentiate them (size, color, motion)
+    or stage them sequentially. This is a default, not a prohibition — complex
+    multi-element compositions are fine when the explanation calls for them.
+
+CAPTIONS:
+
+17. DO NOT draw the narration text on screen. Captions are burned in by ffmpeg.
+    Text mobjects are for labels, symbols, and short titles ONLY (<= 4 words).
+    The bottom-center strip (y < -2.5) must be left EMPTY so captions are readable.
+
+LAYOUT & ALIGNMENT — MANDATORY:
+
+18. Build every scene on a 16:9 safe area of width 12, height 7, centered at ORIGIN.
+    Never place a mobject whose bounding box exceeds x ∈ [-7, 7] or y ∈ [-3.8, 3.8].
+19. Reserve fixed regions and REUSE them across scenes:
+      TITLE  : top,    y = +3.2, x = 0, scale <= 0.6
+      STAGE  : center, ORIGIN, radius <= 2.5
+      CAPTION: bottom, y = -3.0, x = 0  (leave empty — ffmpeg burns captions there)
+    NEVER place a mobject with center y < -2.5.
+20. Align with helpers, never with magic numbers:
+      label.next_to(obj, UP, buff=0.25)
+      VGroup(a, b, c).arrange(RIGHT, buff=0.4).move_to(ORIGIN)
+      group.arrange(DOWN, aligned_edge=LEFT, buff=0.3)
+21. Every `self.play` must have a reason: transform the PREVIOUS mobject into the
+    new one. Never FadeOut then FadeIn the same concept — use ReplacementTransform.
+22. Timing: every `self.play(...)` call gets `run_time=` between 0.6 and 2.0.
+    Vary it — do not default to 1.0 for everything.
+23. The final 2 seconds show ONE composed closing frame: pull the camera back
+    (`self.camera.frame.animate.scale(1.4)`), keep the main concept centered,
+    add the video title as a small Text at TITLE region.
+
 {retry_note}
 
 Style: {style}
 Title: {title}
-Palette (BG=palette[0], INK=palette[1], ACCENT=palette[2]): {palette:?}
+Palette — BG={bg_c}  INK={ink_c}  ACCENT={accent_c}  WARN={warn_c}
 
 Scenes:
 {scenes_json}
@@ -686,7 +849,10 @@ Total target: {target:.2}s
 Produce the file now."##,
         style = board.style,
         title = board.title,
-        palette = palette,
+        bg_c = bg_c,
+        ink_c = ink_c,
+        accent_c = accent_c,
+        warn_c = warn_c,
         scenes_json = scenes_json,
         durations_json = durations_json,
         target = target,
@@ -749,17 +915,25 @@ fn rewrite_brace_get_text(code: String) -> String {
     .into_owned()
 }
 
-/// Deterministic fix for:
-///   AttributeError: 'StoryAnimation' object has no attribute 'frame'
-///
-/// `self.frame` does not exist on a Scene in Manim CE. The only valid
-/// camera surface for `MovingCameraScene` under Cairo is `self.camera.frame`.
-/// `self.camera.frame` does not contain `self.frame` as a substring, so this
-/// replacement is safe.
 fn force_camera_frame_idiom(code: String) -> String {
     use regex::Regex;
     let re = Regex::new(r"\bself\.frame\b").unwrap();
     re.replace_all(&code, "self.camera.frame").into_owned()
+}
+
+fn guard_zero_waits(code: String) -> String {
+    use regex::Regex;
+
+    let re_max = Regex::new(r"self\.wait\(\s*max\(\s*0\.0\s*,\s*(?P<expr>[^()]*(?:\([^()]*\)[^()]*)*)\)\s*\)").unwrap();
+    let code = re_max
+        .replace_all(&code, |caps: &regex::Captures| {
+            let expr = caps["expr"].trim();
+            format!("_w = float({expr})\n        if _w > 0.05:\n            self.wait(_w)")
+        })
+        .into_owned();
+
+    let re_zero = Regex::new(r"(?m)^[ \t]*self\.wait\(\s*0(?:\.0+)?\s*\)[ \t]*(?:#.*)?\n").unwrap();
+    re_zero.replace_all(&code, "").into_owned()
 }
 
 fn ensure_background(mut code: String, bg: &str) -> String {
@@ -785,13 +959,30 @@ fn is_moving_camera_scene(code: &str) -> bool {
     re.is_match(code)
 }
 
-fn pick_background(board: &Storyboard) -> String {
-    board
-        .scenes
-        .first()
-        .and_then(|s| s.palette.first())
-        .cloned()
-        .unwrap_or_else(|| "#0B1026".into())
+fn clean_manim_error(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for line in raw.lines() {
+        let t = line.trim_start_matches(['|', '+', '-']).trim();
+        if t.is_empty() {
+            continue;
+        }
+        if t.starts_with("Traceback (most recent call last)") {
+            continue;
+        }
+        if line.trim_start().starts_with("C:\\") || line.contains("site-packages\\manim") {
+            continue;
+        }
+        if t.starts_with('^') || t.starts_with('~') {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if let Some(pos) = out.rfind("Error:") {
+        let tail: String = out[pos..].lines().next().unwrap_or("").to_string();
+        out = format!("{tail}\n\n---\n{out}");
+    }
+    out.chars().take(2500).collect()
 }
 
 async fn svc_request_manim_code(
@@ -802,7 +993,7 @@ async fn svc_request_manim_code(
     let body = json!({
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "You are a world-class Manim developer. Output only valid, runnable Python. Never use LaTeX. Camera animation MUST use self.camera.frame (Cairo/MovingCameraScene). NEVER write self.frame. Line/Arrow/DashedLine/Vector/ArcBetweenPoints take exactly two positional arguments. Never call brace.get_text or brace.get_tex — use Text(\"...\").next_to(brace, ...). Prefer transform chains, path animation, camera moves, and semantic highlights. Return only one ```python fenced block."},
+            {"role": "system", "content": "You are a world-class Manim developer. Output only valid, runnable Python. Never use LaTeX. Camera animation MUST use self.camera.frame (Cairo/MovingCameraScene). NEVER write self.frame. Line/Arrow/DashedLine/Vector/ArcBetweenPoints take exactly two positional arguments. Never call brace.get_text or brace.get_tex — use Text(\"...\").next_to(brace, ...). Never write self.wait(0) or self.wait(max(0.0, ...)). Align with .next_to/.arrange/.to_edge — never hand-place with LEFT*x+UP*y. Never draw caption text; leave the bottom strip empty. Return only one ```python fenced block."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.6
@@ -832,6 +1023,7 @@ async fn svc_request_manim_code(
     let code = sanitize_manim_code(code);
     let code = rewrite_brace_get_text(code);
     let code = force_camera_frame_idiom(code);
+    let code = guard_zero_waits(code);
     let code = ensure_background(code, bg);
 
     if !is_moving_camera_scene(&code) {
@@ -885,7 +1077,7 @@ async fn svc_generate_manim_with_render(
                     "manim render failed, retrying"
                 );
                 let _ = tokio::fs::remove_file(&rel_path).await;
-                last_err = Some(e.to_string());
+                last_err = Some(clean_manim_error(&e.to_string()));
             }
         }
     }
@@ -903,14 +1095,20 @@ async fn svc_render(state: &AppState, script_path: &str, run_id: &str) -> AppRes
         return Err(AppError::BadRequest("script_path must end in .py".into()));
     }
 
-    // Fast-fail if `self.frame` slipped through the sanitizer. This runs
-    // BEFORE spawning manim so we don't waste 60s of render time on a script
-    // that cannot possibly execute.
     let source = tokio::fs::read_to_string(&canonical).await?;
     if regex::Regex::new(r"\bself\.frame\b").unwrap().is_match(&source) {
         return Err(AppError::Render(
             "generated script uses `self.frame` (no such attribute). \
              Must use `self.camera.frame` with MovingCameraScene + Cairo."
+                .into(),
+        ));
+    }
+    if regex::Regex::new(r"(?m)^[ \t]*self\.wait\(\s*max\(\s*0\.0").unwrap().is_match(&source)
+        || regex::Regex::new(r"(?m)^[ \t]*self\.wait\(\s*0(?:\.0+)?\s*\)").unwrap().is_match(&source)
+    {
+        return Err(AppError::Render(
+            "generated script contains self.wait(0) or self.wait(max(0.0, ...)); \
+             Manim raises 'duration of 0 <= 0 seconds'. Use the guarded if-block."
                 .into(),
         ));
     }
@@ -947,27 +1145,16 @@ async fn svc_render(state: &AppState, script_path: &str, run_id: &str) -> AppRes
         .arg("--media_dir").arg(&media_dir_arg)
         .arg("--renderer=cairo");
 
-    // NOTE: `-aaVector` is a ManimGL-only flag. Manim CE (the `manim` on PATH
-    // here) rejects it, and because clap walks clustered short flags
-    // character-by-character it surfaces as the confusing
-    //   "Error: No such option '-V'."
-    // Cairo antialiasing is already on by default and controlled by
-    // --quality (-qh renders AA'd at 1080p60). Do not pass any -aa* flags.
-
     if state.config.manim_disable_caching {
         cmd.arg("--disable_caching");
     }
 
-    // Log the exact argv one time so a future `-V`-class bug is a 5-second
-    // diagnosis, not a mystery. This prints BEFORE we spawn, so it fires even
-    // when manim immediately rejects the flags.
     tracing::info!(
         run_id = %run_id,
         bin = %state.config.manim_bin,
         quality = quality_flag.as_str(),
         resolution = %res,
         fps = fps.as_str(),
-        antialiasing = state.config.enable_antialiasing,
         "invoking manim"
     );
 
@@ -991,6 +1178,11 @@ async fn svc_render(state: &AppState, script_path: &str, run_id: &str) -> AppRes
         return Err(AppError::Render(format!("manim failed: {stderr}")));
     }
 
+    // NOTE: Manim v0.22.0 changed output path resolution. The candidates below
+    // work for v0.21.x. If you upgrade to v0.22.0+, read
+    // scene.renderer.file_writer.final_file_path instead of constructing paths.
+    // Pin your Manim version in the install script until you have verified
+    // the new output surface.
     let mut candidates: Vec<PathBuf> = Vec::new();
     let res_folder = {
         let parts: Vec<&str> = res.split(',').collect();
@@ -1017,7 +1209,7 @@ async fn svc_render(state: &AppState, script_path: &str, run_id: &str) -> AppRes
 }
 
 // ---------------------------------------------------------------------------
-// Combine (with subtitle burn-in)
+// Combine (with symmetric duration guard + PCM intermediate)
 // ---------------------------------------------------------------------------
 
 async fn svc_combine(
@@ -1033,8 +1225,28 @@ async fn svc_combine(
     if !(audio_dur.is_finite() && audio_dur > 0.0) {
         return Err(AppError::Ffmpeg(format!("invalid audio duration: {audio_dur}")));
     }
-    let dur = format!("{audio_dur:.3}");
 
+    let video_dur = svc_probe_duration(state, &video.to_string_lossy()).await?;
+
+    // SYMMETRIC GUARD: if video is shorter than audio, Manim sections underran.
+    // If video is longer than audio, the LLM inserted extra waits that pushed
+    // past the scene's slot. Both desync the remaining scenes from their audio.
+    if video_dur + 0.05 < audio_dur {
+        return Err(AppError::Render(format!(
+            "video ({video_dur:.2}s) shorter than audio ({audio_dur:.2}s) — \
+             Manim sections underran; the trailing padding wait did not fill its slot"
+        )));
+    }
+    if video_dur > audio_dur + 0.5 {
+        return Err(AppError::Render(format!(
+            "video ({video_dur:.2}s) is {:.2}s longer than audio ({audio_dur:.2}s) — \
+             a scene overshot its slot (likely an extra self.wait inserted mid-scene). \
+             Trim excess or regenerate with tighter timing.",
+            video_dur - audio_dur
+        )));
+    }
+
+    let dur = format!("{audio_dur:.3}");
     let out = storage_join("output", &format!("final_{}.mp4", uuid::Uuid::new_v4()));
 
     let has_music = state.config.background_music.as_ref().map(|p| p.exists()).unwrap_or(false);
@@ -1059,15 +1271,7 @@ async fn svc_combine(
         } else {
             subs_str
         };
-        let style = format!(
-            "FontName={},FontSize={},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,MarginV=40",
-            state.config.subtitle_font, state.config.subtitle_font_size
-        );
-        vf_parts.push(format!(
-            "subtitles='{}':force_style='{}'",
-            escaped.replace('\'', "'\\''"),
-            style
-        ));
+        vf_parts.push(format!("subtitles='{}'", escaped.replace('\'', "'\\''")));
     }
 
     let video_chain = vf_parts.join(",");
@@ -1172,6 +1376,8 @@ async fn concat_audio(state: &AppState, clips: &[PathBuf], out: &Path) -> AppRes
     let list_abs = std::fs::canonicalize(&list)
         .map_err(|e| AppError::Ffmpeg(format!("concat list missing: {e}")))?;
 
+    // PCM intermediate: avoid double lossy encode. ElevenLabs gives MP3;
+    // decode to PCM during concat, then encode to AAC exactly once in combine.
     let output = Command::new(&state.config.ffmpeg_bin)
         .arg("-y")
         .arg("-f").arg("concat")
@@ -1179,8 +1385,7 @@ async fn concat_audio(state: &AppState, clips: &[PathBuf], out: &Path) -> AppRes
         .arg("-i").arg(&list_abs)
         .arg("-ar").arg("44100")
         .arg("-ac").arg("1")
-        .arg("-c:a").arg("libmp3lame")
-        .arg("-b:a").arg("192k")
+        .arg("-c:a").arg("pcm_s16le")
         .arg(out)
         .output()
         .await
@@ -1261,11 +1466,17 @@ async fn handle_readyz(State(state): State<AppState>) -> impl IntoResponse {
         Err(e) => checks.push(("storage", false, e.to_string())),
     }
 
+    // Manim version check — warn if v0.22.0+ is detected without explicit pinning
     match Command::new(&state.config.manim_bin).arg("--version").output().await {
         Ok(o) if o.status.success() => {
-            let v = String::from_utf8_lossy(&o.stdout).trim().to_string()
-                + String::from_utf8_lossy(&o.stderr).trim();
-            checks.push(("manim", true, format!("bin={} version={v}", state.config.manim_bin)));
+            let v = (String::from_utf8_lossy(&o.stdout).trim().to_string()
+                + String::from_utf8_lossy(&o.stderr).trim()).trim().to_string();
+            let warn = if v.contains("0.22") {
+                "WARNING: Manim v0.22.0 changed output paths; svc_render candidate resolution may fail. Pin to 0.21.x or update candidates."
+            } else {
+                ""
+            };
+            checks.push(("manim", true, format!("bin={} version={v} {warn}", state.config.manim_bin)));
         }
         Ok(o) => checks.push((
             "manim",
@@ -1287,6 +1498,38 @@ async fn handle_readyz(State(state): State<AppState>) -> impl IntoResponse {
         Ok(o) if o.status.success() => checks.push(("ffmpeg", true, "ok".into())),
         Ok(o) => checks.push(("ffmpeg", false, String::from_utf8_lossy(&o.stderr).into_owned())),
         Err(e) => checks.push(("ffmpeg", false, e.to_string())),
+    }
+
+    // Font availability — libass silently substitutes or renders nothing
+    // if the subtitle font is missing. fc-match is cheap and catches it early.
+    match Command::new("fc-match").arg(&state.config.subtitle_font).output().await {
+        Ok(o) if o.status.success() => {
+            let matched = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            let requested = &state.config.subtitle_font;
+            let ok = matched.to_lowercase().contains(&requested.to_lowercase());
+            checks.push((
+                "subtitle_font",
+                ok,
+                if ok {
+                    format!("font={requested} matched={matched}")
+                } else {
+                    format!(
+                        "font={requested} resolved to {matched} — install the font \
+                         or set SUBTITLE_FONT to an available family"
+                    )
+                },
+            ));
+        }
+        Ok(o) => checks.push((
+            "subtitle_font",
+            false,
+            format!("fc-match failed: {}", String::from_utf8_lossy(&o.stderr)),
+        )),
+        Err(e) => checks.push((
+            "subtitle_font",
+            false,
+            format!("fc-match not found ({e}) — install fontconfig to enable font checks"),
+        )),
     }
 
     let ready = checks.iter().all(|(_, ok, _)| *ok);
@@ -1431,21 +1674,22 @@ async fn handle_generate(
     }
 
     let subtitle_rel = if state.config.burn_subtitles {
-        let srt = build_srt(&board, &durations);
-        if srt.trim().is_empty() {
-            None
-        } else {
-            let p = storage_join("output", &format!("subs_{}.srt", uuid::Uuid::new_v4()));
-            tokio::fs::write(&p, srt.as_bytes()).await?;
-            tracing::info!(run_id = %run_id, path = %p.display(), "pipeline: subtitles written");
-            Some(p.to_string_lossy().into_owned())
-        }
+        let ass = build_ass(
+            &board,
+            &durations,
+            &state.config.subtitle_font,
+            state.config.subtitle_font_size,
+        );
+        let p = storage_join("output", &format!("subs_{}.ass", uuid::Uuid::new_v4()));
+        tokio::fs::write(&p, ass.as_bytes()).await?;
+        tracing::info!(run_id = %run_id, path = %p.display(), "pipeline: subtitles written");
+        Some(p.to_string_lossy().into_owned())
     } else {
         None
     };
 
-    tracing::info!(run_id = %run_id, "pipeline: concat audio");
-    let full_audio = storage_join("audio", &format!("full_{}.mp3", uuid::Uuid::new_v4()));
+    tracing::info!(run_id = %run_id, "pipeline: concat audio (PCM intermediate)");
+    let full_audio = storage_join("audio", &format!("full_{}.wav", uuid::Uuid::new_v4()));
     concat_audio(&state, &clips, &full_audio).await?;
 
     tracing::info!(run_id = %run_id, "pipeline: manim code + render");
