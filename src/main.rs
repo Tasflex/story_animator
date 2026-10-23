@@ -317,7 +317,7 @@ fn strip_json_fence(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Palette normalization — Gemini does not guarantee 4 hex colors
+// Palette normalization
 // ---------------------------------------------------------------------------
 
 const FALLBACK_BG: &str = "#0B1026";
@@ -341,9 +341,6 @@ fn luminance_hex(s: &str) -> f64 {
     (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
 }
 
-/// Return exactly 4 valid hex colors: [BG, INK, ACCENT, WARN].
-/// Missing or invalid entries are replaced with fallbacks. Also forces BG
-/// near-black or near-white so a mid-tone bg cannot slip through.
 fn normalize_palette(raw: &[String]) -> [String; 4] {
     let mut out: [Option<String>; 4] = [None, None, None, None];
     for (i, c) in raw.iter().take(4).enumerate() {
@@ -374,7 +371,7 @@ fn pick_background(board: &Storyboard) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Subtitles — phrase-weighted chunking + styled ASS burn-in
+// Subtitles
 // ---------------------------------------------------------------------------
 
 const MAX_CUE_CHARS: usize = 42;
@@ -632,7 +629,7 @@ async fn svc_generate_audio(state: &AppState, script: &str, voice_id: &str) -> A
 }
 
 // ---------------------------------------------------------------------------
-// Premium Manim prompt — timing budget + opacity layering
+// Premium Manim prompt
 // ---------------------------------------------------------------------------
 
 const PREMIUM_EXAMPLES: &str = r##"
@@ -969,14 +966,8 @@ fn is_moving_camera_scene(code: &str) -> bool {
 }
 
 /// Sum `run_time=` values (and implicit 1.0 defaults) per scene, and compare
-/// against target durations. Returns Err with a per-scene report if any scene's
-/// animation budget exceeds its slot by more than the proportional tolerance.
-///
-/// Per-scene tolerance scales with the target: a 7s scene tolerates 0.25s
-/// overshoot, a 14s scene tolerates 0.42s, a 20s scene tolerates 0.6s. This
-/// matches the intuition that longer scenes accumulate proportionally more
-/// fractional-frame error and the LLM's per-play `run_time` choices are
-/// inherently less precise against longer targets.
+/// against target durations. Per-scene tolerance scales with the target:
+/// a 7s scene tolerates 0.25s overshoot, a 14s scene tolerates 0.42s.
 fn check_scene_timing_budget(code: &str, durations: &[f64]) -> Result<(), String> {
     use regex::Regex;
 
@@ -1016,13 +1007,14 @@ fn check_scene_timing_budget(code: &str, durations: &[f64]) -> Result<(), String
             budget += rt;
         }
 
-        // Proportional tolerance: 3% of target, floored at 0.25s.
         let tolerance = (target * 0.03).max(0.25);
         let overshoot = budget - target;
         if overshoot > tolerance {
             violations.push(format!(
                 "scene {i}: sum(run_time) = {budget:.2}s exceeds target T_{i} = {target:.2}s \
-                 by {overshoot:.2}s (tolerance {tolerance:.2}s)"
+                 by {overshoot:.2}s (tolerance {tolerance:.2}s). \
+                 Reduce the run_time of the largest plays by ~{overshoot:.2}s total, \
+                 or merge adjacent plays into a single AnimationGroup with one run_time."
             ));
         }
     }
@@ -1140,7 +1132,21 @@ async fn svc_generate_manim_with_render(
             state.config.premium_examples,
             state.config.enable_typst,
         )?;
-        let code = svc_request_manim_code(state, &prompt, &bg, scene_durations).await?;
+
+        // Generation errors are recoverable — feed them back into the prompt
+        // via last_err and retry. Previously this used `?`, which meant a
+        // timing-budget violation on attempt 1 skipped the retry loop entirely.
+        let code = match svc_request_manim_code(state, &prompt, &bg, scene_durations).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    run_id = %run_id, attempt = attempt + 1, error = ?e,
+                    "manim code generation failed, retrying with error feedback"
+                );
+                last_err = Some(clean_manim_error(&e.to_string()));
+                continue;
+            }
+        };
 
         let rel_path = storage_join("scripts", &format!("{}.py", uuid::Uuid::new_v4()));
         tokio::fs::write(&rel_path, code.as_bytes()).await?;
@@ -1287,7 +1293,7 @@ async fn svc_render(state: &AppState, script_path: &str, run_id: &str) -> AppRes
 }
 
 // ---------------------------------------------------------------------------
-// Combine (frame-aware symmetric duration guard + PCM intermediate)
+// Combine
 // ---------------------------------------------------------------------------
 
 async fn svc_combine(
@@ -1306,14 +1312,6 @@ async fn svc_combine(
 
     let video_dur = svc_probe_duration(state, &video.to_string_lossy()).await?;
 
-    // Frame-aware tolerances:
-    //   underrun: 5 frames at the configured fps, floored at 0.15s. Absorbs
-    //             per-scene frame quantization across many scenes (Manim
-    //             rounds section ends to frame boundaries, so 6 scenes can
-    //             accumulate a few frames of drift without a real underrun).
-    //   overrun:  3% of audio duration, floored at 2.0s. Scales with video
-    //             length so accumulated per-scene drift on long videos
-    //             doesn't fail spuriously.
     let fps = state.config.manim_fps as f64;
     let underrun_tolerance = (5.0 / fps).max(0.15);
     let overrun_tolerance = (0.03 * audio_dur).max(2.0);
@@ -1465,8 +1463,6 @@ async fn concat_audio(state: &AppState, clips: &[PathBuf], out: &Path) -> AppRes
     let list_abs = std::fs::canonicalize(&list)
         .map_err(|e| AppError::Ffmpeg(format!("concat list missing: {e}")))?;
 
-    // PCM intermediate: avoid double lossy encode. ElevenLabs gives MP3;
-    // decode to PCM during concat, then encode to AAC exactly once in combine.
     let output = Command::new(&state.config.ffmpeg_bin)
         .arg("-y")
         .arg("-f").arg("concat")
