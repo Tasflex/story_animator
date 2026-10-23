@@ -199,7 +199,7 @@ impl Config {
 
         Ok(Config {
             gemini_api_key: env_required("GEMINI_API_KEY")?,
-            gemini_model: env_default("GEMINI_MODEL", "gemini-3.5-flash"),
+            gemini_model: env_default("GEMINI_MODEL", "gemini-2.5-flash"),
             elevenlabs_api_key: env_required("ELEVENLABS_API_KEY")?,
             deepseek_api_key: env_required("DEEPSEEK_API_KEY")?,
             manim_bin: env_bare_exe("MANIM_BIN", "manim")?,
@@ -632,7 +632,7 @@ async fn svc_generate_audio(state: &AppState, script: &str, voice_id: &str) -> A
 }
 
 // ---------------------------------------------------------------------------
-// Premium Manim prompt — with opacity layering and salience guidance
+// Premium Manim prompt — timing budget + opacity layering
 // ---------------------------------------------------------------------------
 
 const PREMIUM_EXAMPLES: &str = r##"
@@ -703,7 +703,7 @@ fn build_manim_prompt(
 
     let retry_note = match previous_error {
         Some(err) => format!(
-            "\n\nIMPORTANT: A previous attempt failed with this Manim error. Fix it:\n---\n{}\n---\n",
+            "\n\nIMPORTANT: A previous attempt failed. Fix it:\n---\n{}\n---\n",
             err.chars().take(3000).collect::<String>()
         ),
         None => String::new(),
@@ -738,6 +738,14 @@ Hard requirements:
    If _rem <= 0.05 the animations already filled the slot — do NOT call wait().
    `self.wait(0)` raises "duration of 0 <= 0 seconds", so the `if _rem > 0.05` guard
    is MANDATORY. Never write `self.wait(max(0.0, ...))`.
+2b. CRITICAL TIMING BUDGET — the sum of every `run_time=` value across all
+    `self.play(...)` calls in scene i MUST be LESS THAN OR EQUAL TO T_i.
+    Before writing the plays for a scene, add up the run_time values and
+    confirm the sum <= T_i. If the sum exceeds T_i, reduce run_time values
+    or merge multiple plays into a single AnimationGroup.
+    The `_rem` padding is a safety net for UNDERshoot, NOT a license to
+    overshoot. Overshooting desyncs the scene from its narration audio and
+    the render is rejected. Budget arithmetic is mandatory.
 3. Colors: the FIRST line inside construct MUST be exactly:
        BG, INK, ACCENT, WARN = "{bg_c}", "{ink_c}", "{accent_c}", "{warn_c}"
    Do not change these values. Do not add or remove names. Four values, four names.
@@ -748,7 +756,8 @@ Hard requirements:
    DecimalNumber, ArcBetweenPoints, DashedLine, ValueTracker, Typst,
    Graph, Matrix, ComplexPlane, ParametricFunction, VectorField, StreamLines,
    BarChart, Table, Dodecahedron.
-   You are NOT limited to primitives — use the full Manim toolkit where it serves the explanation.
+   You are NOT limited to primitives — use the full Manim toolkit where it
+   serves the explanation.
 4b. NEVER call `brace.get_text(...)` or `brace.get_tex(...)`. Use
     `label = Text("x").next_to(brace, DOWN, buff=0.1)` and `FadeIn(label)`.
 {typst_rule}
@@ -759,8 +768,8 @@ Hard requirements:
    (d) >=1 SurroundingRectangle + Indicate pairing,
    (e) >=1 Brace / NumberLine / Axes,
    (f) >=1 rate_func=there_and_back or overshoot.
-   These are signals of craft. They are not mandatory — deviate when a different
-   technique serves the explanation better.
+   These are signals of craft. They are not mandatory — deviate when a
+   different technique serves the explanation better.
 6. `self.wait(...)` is only valid in TWO places:
    (a) the guarded trailing padding wait in rule 2, and
    (b) NOWHERE ELSE inside a scene. Between `self.play(...)` calls, animate instead.
@@ -959,6 +968,77 @@ fn is_moving_camera_scene(code: &str) -> bool {
     re.is_match(code)
 }
 
+/// Sum `run_time=` values (and implicit 1.0 defaults) per scene, and compare
+/// against target durations. Returns Err with a per-scene report if any scene's
+/// animation budget exceeds its slot by more than the proportional tolerance.
+///
+/// Per-scene tolerance scales with the target: a 7s scene tolerates 0.25s
+/// overshoot, a 14s scene tolerates 0.42s, a 20s scene tolerates 0.6s. This
+/// matches the intuition that longer scenes accumulate proportionally more
+/// fractional-frame error and the LLM's per-play `run_time` choices are
+/// inherently less precise against longer targets.
+fn check_scene_timing_budget(code: &str, durations: &[f64]) -> Result<(), String> {
+    use regex::Regex;
+
+    if durations.is_empty() {
+        return Ok(());
+    }
+
+    let scene_split: Vec<&str> = code.split("self.next_section").collect();
+    if scene_split.len() < 2 {
+        return Ok(());
+    }
+
+    let re_play = Regex::new(r"self\.play\s*\(").unwrap();
+    let re_run_time = Regex::new(r"run_time\s*=\s*([0-9.]+)").unwrap();
+
+    let mut violations: Vec<String> = Vec::new();
+
+    for (i, scene_body) in scene_split.iter().skip(1).enumerate() {
+        let target = match durations.get(i) {
+            Some(d) => *d,
+            None => break,
+        };
+
+        let mut play_starts: Vec<usize> = re_play
+            .find_iter(scene_body)
+            .map(|m| m.start())
+            .collect();
+        play_starts.push(scene_body.len());
+
+        let mut budget = 0.0_f64;
+        for w in play_starts.windows(2) {
+            let call_slice = &scene_body[w[0]..w[1]];
+            let rt = re_run_time
+                .captures(call_slice)
+                .and_then(|c| c[1].parse::<f64>().ok())
+                .unwrap_or(1.0);
+            budget += rt;
+        }
+
+        // Proportional tolerance: 3% of target, floored at 0.25s.
+        let tolerance = (target * 0.03).max(0.25);
+        let overshoot = budget - target;
+        if overshoot > tolerance {
+            violations.push(format!(
+                "scene {i}: sum(run_time) = {budget:.2}s exceeds target T_{i} = {target:.2}s \
+                 by {overshoot:.2}s (tolerance {tolerance:.2}s)"
+            ));
+        }
+    }
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "TIMING BUDGET VIOLATION — the sum of run_time values per scene must be <= T_i. \
+             Reduce run_time values or merge multiple plays into a single AnimationGroup. \
+             Violations:\n  {}",
+            violations.join("\n  ")
+        ))
+    }
+}
+
 fn clean_manim_error(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for line in raw.lines() {
@@ -989,11 +1069,12 @@ async fn svc_request_manim_code(
     state: &AppState,
     prompt: &str,
     bg: &str,
+    durations: &[f64],
 ) -> AppResult<String> {
     let body = json!({
         "model": "deepseek-chat",
         "messages": [
-            {"role": "system", "content": "You are a world-class Manim developer. Output only valid, runnable Python. Never use LaTeX. Camera animation MUST use self.camera.frame (Cairo/MovingCameraScene). NEVER write self.frame. Line/Arrow/DashedLine/Vector/ArcBetweenPoints take exactly two positional arguments. Never call brace.get_text or brace.get_tex — use Text(\"...\").next_to(brace, ...). Never write self.wait(0) or self.wait(max(0.0, ...)). Align with .next_to/.arrange/.to_edge — never hand-place with LEFT*x+UP*y. Never draw caption text; leave the bottom strip empty. Return only one ```python fenced block."},
+            {"role": "system", "content": "You are a world-class Manim developer. Output only valid, runnable Python. Never use LaTeX. Camera animation MUST use self.camera.frame (Cairo/MovingCameraScene). NEVER write self.frame. Line/Arrow/DashedLine/Vector/ArcBetweenPoints take exactly two positional arguments. Never call brace.get_text or brace.get_tex — use Text(\"...\").next_to(brace, ...). Never write self.wait(0) or self.wait(max(0.0, ...)). The sum of run_time values per scene MUST be <= the scene's target duration T_i from the durations array. Align with .next_to/.arrange/.to_edge — never hand-place with LEFT*x+UP*y. Never draw caption text; leave the bottom strip empty. Return only one ```python fenced block."},
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.6
@@ -1032,6 +1113,8 @@ async fn svc_request_manim_code(
         ));
     }
 
+    check_scene_timing_budget(&code, durations).map_err(AppError::DeepSeek)?;
+
     Ok(code)
 }
 
@@ -1057,7 +1140,7 @@ async fn svc_generate_manim_with_render(
             state.config.premium_examples,
             state.config.enable_typst,
         )?;
-        let code = svc_request_manim_code(state, &prompt, &bg).await?;
+        let code = svc_request_manim_code(state, &prompt, &bg, scene_durations).await?;
 
         let rel_path = storage_join("scripts", &format!("{}.py", uuid::Uuid::new_v4()));
         tokio::fs::write(&rel_path, code.as_bytes()).await?;
@@ -1178,11 +1261,6 @@ async fn svc_render(state: &AppState, script_path: &str, run_id: &str) -> AppRes
         return Err(AppError::Render(format!("manim failed: {stderr}")));
     }
 
-    // NOTE: Manim v0.22.0 changed output path resolution. The candidates below
-    // work for v0.21.x. If you upgrade to v0.22.0+, read
-    // scene.renderer.file_writer.final_file_path instead of constructing paths.
-    // Pin your Manim version in the install script until you have verified
-    // the new output surface.
     let mut candidates: Vec<PathBuf> = Vec::new();
     let res_folder = {
         let parts: Vec<&str> = res.split(',').collect();
@@ -1209,7 +1287,7 @@ async fn svc_render(state: &AppState, script_path: &str, run_id: &str) -> AppRes
 }
 
 // ---------------------------------------------------------------------------
-// Combine (with symmetric duration guard + PCM intermediate)
+// Combine (frame-aware symmetric duration guard + PCM intermediate)
 // ---------------------------------------------------------------------------
 
 async fn svc_combine(
@@ -1228,20 +1306,31 @@ async fn svc_combine(
 
     let video_dur = svc_probe_duration(state, &video.to_string_lossy()).await?;
 
-    // SYMMETRIC GUARD: if video is shorter than audio, Manim sections underran.
-    // If video is longer than audio, the LLM inserted extra waits that pushed
-    // past the scene's slot. Both desync the remaining scenes from their audio.
-    if video_dur + 0.05 < audio_dur {
+    // Frame-aware tolerances:
+    //   underrun: 5 frames at the configured fps, floored at 0.15s. Absorbs
+    //             per-scene frame quantization across many scenes (Manim
+    //             rounds section ends to frame boundaries, so 6 scenes can
+    //             accumulate a few frames of drift without a real underrun).
+    //   overrun:  3% of audio duration, floored at 2.0s. Scales with video
+    //             length so accumulated per-scene drift on long videos
+    //             doesn't fail spuriously.
+    let fps = state.config.manim_fps as f64;
+    let underrun_tolerance = (5.0 / fps).max(0.15);
+    let overrun_tolerance = (0.03 * audio_dur).max(2.0);
+
+    if video_dur + underrun_tolerance < audio_dur {
         return Err(AppError::Render(format!(
-            "video ({video_dur:.2}s) shorter than audio ({audio_dur:.2}s) — \
-             Manim sections underran; the trailing padding wait did not fill its slot"
+            "video ({video_dur:.2}s) is {:.2}s shorter than audio ({audio_dur:.2}s) \
+             (underrun tolerance {underrun_tolerance:.2}s) — Manim sections underran; \
+             the trailing padding wait did not fill its slot",
+            audio_dur - video_dur
         )));
     }
-    if video_dur > audio_dur + 0.5 {
+    if video_dur > audio_dur + overrun_tolerance {
         return Err(AppError::Render(format!(
-            "video ({video_dur:.2}s) is {:.2}s longer than audio ({audio_dur:.2}s) — \
-             a scene overshot its slot (likely an extra self.wait inserted mid-scene). \
-             Trim excess or regenerate with tighter timing.",
+            "video ({video_dur:.2}s) is {:.2}s longer than audio ({audio_dur:.2}s) \
+             (overrun tolerance {overrun_tolerance:.2}s) — scene timing budget \
+             overshot beyond accumulation tolerance",
             video_dur - audio_dur
         )));
     }
@@ -1466,7 +1555,6 @@ async fn handle_readyz(State(state): State<AppState>) -> impl IntoResponse {
         Err(e) => checks.push(("storage", false, e.to_string())),
     }
 
-    // Manim version check — warn if v0.22.0+ is detected without explicit pinning
     match Command::new(&state.config.manim_bin).arg("--version").output().await {
         Ok(o) if o.status.success() => {
             let v = (String::from_utf8_lossy(&o.stdout).trim().to_string()
@@ -1500,8 +1588,6 @@ async fn handle_readyz(State(state): State<AppState>) -> impl IntoResponse {
         Err(e) => checks.push(("ffmpeg", false, e.to_string())),
     }
 
-    // Font availability — libass silently substitutes or renders nothing
-    // if the subtitle font is missing. fc-match is cheap and catches it early.
     match Command::new("fc-match").arg(&state.config.subtitle_font).output().await {
         Ok(o) if o.status.success() => {
             let matched = String::from_utf8_lossy(&o.stdout).trim().to_string();
@@ -1590,7 +1676,7 @@ async fn handle_manim(
         &board, &durations, None,
         state.config.premium_examples, state.config.enable_typst,
     )?;
-    let code = svc_request_manim_code(&state, &prompt, &bg).await?;
+    let code = svc_request_manim_code(&state, &prompt, &bg, &durations).await?;
 
     let rel_path = storage_join("scripts", &format!("{}.py", uuid::Uuid::new_v4()));
     tokio::fs::write(&rel_path, code.as_bytes()).await?;
@@ -1747,7 +1833,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState {
         client: Client::builder()
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(300))
             .build()?,
         config: Arc::new(config),
