@@ -9,7 +9,7 @@ Empty values mean "use the default".
 | Variable | Default | Description |
 |---|---|---|
 | `GEMINI_API_KEY` | — | Google AI Studio key. The primary writer. |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Any Gemini model that supports JSON output |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Any Gemini model that supports JSON output (the server uses `gemini-3.5-flash`) |
 | `DEEPSEEK_API_KEY` | — | Fallback writer (used if Gemini fails or isn't configured) |
 | `DEEPSEEK_MODEL` | `deepseek-chat` | |
 | `LLM_PROVIDER` | `auto` | `auto` (Gemini, then DeepSeek), `gemini`, or `deepseek` |
@@ -23,9 +23,17 @@ storyboards (`--storyboard`) don't need one.
 |---|---|---|
 | `ELEVENLABS_API_KEY` | — | Required unless `TTS_PROVIDER=silent` |
 | `ELEVENLABS_VOICE_ID` | first premade voice | The voice. Find IDs in the ElevenLabs Voice Library. Can be overridden per video. |
-| `ELEVENLABS_MODEL` | `eleven_multilingual_v2` | Also works: `eleven_turbo_v2_5`, `eleven_flash_v2_5` (cheaper, slightly less expressive) |
+| `ELEVENLABS_MODEL` | `eleven_v4` | `eleven_v3`/`eleven_v4` follow audio tags (`[curious]`, `[excited]`…) that the writer adds for expressive delivery. `eleven_v4_turbo` costs half as much per character. Older models (`eleven_multilingual_v2`, `eleven_flash_v2_5`) work too; the writer then leaves tags out. |
 | `TTS_PROVIDER` | `elevenlabs` | `silent` = no audio, estimated word timings (free previews) |
 | `TTS_CONCURRENCY` | `3` | Parallel TTS requests (lower it if you hit 429 rate limits) |
+
+Only narrated scenes are sent to ElevenLabs; chapter cards and visual beats are silent.
+
+## Channel
+
+| Variable | Default | Description |
+|---|---|---|
+| `MIN_TOPIC_FIT` | `6` | The outline scores each topic 1–10 against the channel brief in `src/niche.rs`. Below this, generation stops with the reason. `--force` (or `"force": true` in the API) overrides. `0` disables the check. |
 
 ## Visual style
 
@@ -39,8 +47,10 @@ storyboards (`--storyboard`) don't need one.
 
 | Variable | Default | Description |
 |---|---|---|
-| `TARGET_DURATION_SECS` | `60` | Exact length of every video (15–600). The word budget scales with it. |
-| `ASPECT` | `landscape` | `landscape` (1920×1080) or `portrait` (1080×1920 for Shorts, Reels, TikTok) |
+| `TARGET_DURATION_SECS` | `300` | Exact length of every video (15–600). The word budget scales with it. From 120s up, scripts are written chapter by chapter. |
+| `ASPECT` | `landscape` | `landscape` (1920×1080) or `portrait` (1080×1920). Keep `landscape` for long videos: the vertical short is cut from it. |
+| `SHORTS` | `1` | Also cut a 9:16 short from every landscape video (from the chapter the writer picked) |
+| `SHORT_MAX_SECS` | `59` | Upper bound for the short (15–60). The cut is trimmed at scene boundaries to fit. |
 | `RENDER_QUALITY` | `high` | `draft` 540p/15fps · `standard` 720p/30 · `high` 1080p/30 · `ultra` 1080p/60 |
 | `TRANSITION_SECS` | `0.5` | Crossfade length between scenes (0 = hard cuts) |
 | `MAX_SPEECH_TEMPO` | `1.15` | Maximum narration speed-up when the script runs long (1.0–1.3) |
@@ -49,8 +59,8 @@ storyboards (`--storyboard`) don't need one.
 
 | Variable | Default | Description |
 |---|---|---|
-| `BACKGROUND_MUSIC` | `none` | `none`, `elevenlabs` (generates a score per video from the storyboard's `music` brief; needs a plan with Music access), or a path to an audio file (looped and trimmed) |
-| `MUSIC_VOLUME` | `0.14` | Music level before ducking (0–1). Music ducks automatically under the voice. |
+| `BACKGROUND_MUSIC` | `library` | `library`: one track per video from `assets/music/` (fill it once with `story_animator music`), or a path to another folder. `elevenlabs`: generate a score per video from the storyboard's `music` brief (costs every time). A path to one audio file (looped and trimmed). `none`. |
+| `MUSIC_VOLUME` | `0.07` | Music level before ducking (0–1). Kept low on purpose; it ducks further under the voice and is mainly heard in silent scenes. |
 | `BURN_SUBTITLES` | `1` | Burn word-highlight captions into the video |
 | `SUBTITLE_FONT` | `Poppins` | Must be in `assets/fonts` or installed system-wide |
 
@@ -83,4 +93,4 @@ Narration is loudness-normalised to about -15 LUFS (a good level for YouTube and
 ## Per-video overrides
 
 The CLI flags and API fields override the environment for one video:
-`--style`, `--aspect`, `-q/--quality`, `--theme`, `--voice`, `--audience`, `--silent`, `--no-music`.
+`--style`, `--aspect`, `-q/--quality`, `--theme`, `--voice`, `--audience`, `--silent`, `--no-music`, `--force`.

@@ -452,11 +452,16 @@ def layout_stat(ctx: Ctx):
         if icon:
             ctx.float(icon, 0.05)
 
-    t0 = ctx.cue(c.get("cue"), None) or ctx.narr_start + 0.4
-    t0 = max(t0, 0.5)
+    # The counter starts rolling early (a frozen "0" reads as broken) and lands
+    # on the value as the narrator says it.
+    t_say = ctx.cue(c.get("cue"), None) or ctx.narr_start + 0.4
+    t0 = max(min(t_say, ctx.first_by + 0.3), 0.5)
+    count_len = min(max(2.0, t_say - t0 + 0.4), max(ctx.content_end - t0 - 1.0, 1.0))
     ctx.scene.add(anchor)
-    ctx.at(0.2, lambda: [FadeIn(visual, scale=0.8, rate_func=POP), *(FadeIn(d) for d in dynamic)], 0.7)
-    ctx.at(t0, lambda: tracker.animate(rate_func=EASE).set_value(value), 2.0)
+    ctx.at(0.2, lambda: FadeIn(visual, scale=0.8, rate_func=POP), 0.7)
+    ctx.at(t0 - 0.3, lambda: [FadeIn(d) for d in dynamic], 0.3)
+    ctx.at(t0, lambda: tracker.animate(rate_func=EASE).set_value(value), count_len)
+    t0 = t_say
     tl = ctx.cue(c.get("label_cue") or c.get("label"), None, after=t0 - 1)
     ctx.at(max(tl or t0 + 0.8, 0.6), lambda: FadeIn(label, shift=UP * 0.2), 0.6)
     if c.get("context"):

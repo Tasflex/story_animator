@@ -17,21 +17,24 @@ run at once; the rest wait in a queue.
 
 ```json
 {
-  "topic": "Why is the sky blue?",
+  "topic": "How do wind turbines turn wind into power?",
   "style": "diagram",
-  "aspect": "portrait",
+  "aspect": "landscape",
   "quality": "high",
-  "theme": "ocean",
-  "audience": "curious 10-year-olds",
+  "theme": "blueprint",
+  "audience": "curious teens",
   "voice_id": "optional ElevenLabs voice id",
   "silent": false,
-  "music": true
+  "music": true,
+  "force": false
 }
 ```
 
 Give either `topic` or `storyboard` (a full storyboard object, see
 [STORYBOARD.md](STORYBOARD.md)). All other fields are optional and default
-to the server's `.env`.
+to the server's `.env`. A landscape job produces the YouTube video *and* a
+vertical short. `force: true` makes a video even if the topic doesn't fit
+the channel niche. Otherwise such a job fails with the fit score and reason.
 
 **202 Accepted**
 ```json
@@ -58,12 +61,19 @@ to the server's `.env`.
 ```
 
 - `state`: `queued` → `running` → `done` | `failed`
-- `stage`: `storyboard` → `narration` → `timeline` → `render` → `compose` → `done`
-- When finished, `result` contains `title`, `duration`, `scenes`, `width`, `height`, `fps` and paths.
+- `stage`: `storyboard` → `narration` → `timeline` → `custom` → `render` → `compose` → `short` → `done`
+- When finished, `result` contains `title`, `duration`, `scenes`, `width`, `height`, `fps`, `short_duration`
+  and the paths of `video`, `short` and `youtube` (the text file with title, description and chapter timestamps).
 
-## `GET /api/videos/{id}/video`: download
+## `GET /api/videos/{id}/video`: download the YouTube video
 
-Streams the MP4 (`video/mp4`). Returns 404 until the job is done.
+Streams `final.mp4` (16:9, `video/mp4`). Returns 404 until the job is done.
+
+## `GET /api/videos/{id}/short`: download the short
+
+Streams `short.mp4` (9:16, at most `SHORT_MAX_SECS`). Returns 404 until the
+job is done, or if no short was made (portrait jobs, `SHORTS=0`, or a
+hand-written storyboard without a `short` range).
 
 ## `GET /api/videos/{id}/storyboard`
 
@@ -76,10 +86,11 @@ All jobs since the server started, newest first.
 ## `POST /api/storyboard`: storyboard only
 
 ```json
-{ "topic": "How vaccines work", "style": "diagram", "theme": "blueprint", "audience": "adults", "aspect": "landscape" }
+{ "topic": "How a mechanical watch keeps time", "style": "diagram", "theme": "blueprint",
+  "audience": "adults", "aspect": "landscape", "force": false }
 ```
-Returns `{ "storyboard": {...}, "words": 132 }`. Review or edit it, then send
-it back as `POST /api/videos {"storyboard": ...}`.
+Returns `{ "storyboard": {...}, "words": 580 }`. It costs only LLM calls.
+Review or edit it, then send it back as `POST /api/videos {"storyboard": ...}`.
 
 ## `GET /api/catalog`
 
@@ -94,12 +105,13 @@ The vocabulary: layouts with their content schemas, icons, backgrounds, themes, 
 
 ```bash
 ID=$(curl -s -X POST localhost:3000/api/videos -H 'content-type: application/json' \
-      -d '{"topic":"How do bees make honey?"}' | jq -r .id)
+      -d '{"topic":"How elevators stop safely"}' | jq -r .id)
 while :; do
   S=$(curl -s localhost:3000/api/videos/$ID); echo "$S" | jq -r '"\(.state) \(.progress) \(.message)"'
-  [[ $(echo "$S" | jq -r .state) =~ done|failed ]] && break; sleep 5
+  [[ $(echo "$S" | jq -r .state) =~ done|failed ]] && break; sleep 10
 done
-curl -o honey.mp4 localhost:3000/api/videos/$ID/video
+curl -o elevators.mp4       localhost:3000/api/videos/$ID/video
+curl -o elevators_short.mp4 localhost:3000/api/videos/$ID/short
 ```
 
 Errors are JSON: `{"error": "..."}`, with 400 for bad input, 404 for unknown ids, and 500 for failures.

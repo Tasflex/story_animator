@@ -21,31 +21,42 @@ vocabulary of layouts, icons and motions. All the craft (composition,
 easing, typography, timing) lives in tested code that always renders.
 
 The old version had one real strength: a bespoke diagram for each idea.
-That survives in a contained form. A storyboard may mark up to two scenes
-as `custom`, and for those the LLM writes code for that **one scene**,
-against the same small `ctx` API the built-in layouts use. The code is
-statically sandbox-checked, dry-run, and retried with the error message.
-If it still fails, the scene's declared `fallback` layout renders instead.
-The blast radius of a mistake is one scene, not the whole video.
+That survives in a contained form. A storyboard may mark a few scenes
+(up to 4 in a five-minute video) as `custom`, and for those the LLM writes
+code for that **one scene**, against the same small `ctx` API the built-in
+layouts use. The code is statically sandbox-checked, dry-run, and retried
+with the error message. If it still fails, the scene's declared `fallback`
+layout renders instead. The blast radius of a mistake is one scene, not the
+whole video.
 
 ## Pipeline
 
 ```
                 ┌──────────────┐
-  topic ───────►│ 1 storyboard │  llm.rs: Gemini (DeepSeek fallback), JSON only,
-                └──────┬───────┘  validated + repaired up to 3 rounds
+  topic ───────►│ 1a outline   │  llm.rs: niche fit score (refuse < MIN_TOPIC_FIT unless
+                └──────┬───────┘  --force), 5-6 chapters, a wow per chapter, the short pick
                        ▼
                 ┌──────────────┐
-                │ 2 narration  │  tts.rs: ElevenLabs /with-timestamps per scene,
-                └──────┬───────┘  previous/next text for natural flow, cached
+                │ 1b chapters  │  one LLM call per chapter, in parallel, each against its
+                └──────┬───────┘  own word budget; validated + repaired up to 3 rounds;
+                       │          joined with silent chapter cards
                        ▼
                 ┌──────────────┐
-                │ 3 timeline   │  timeline.rs: slots summing to exactly 60.000s
-                └──────┬───────┘  (auto-tightens script once if too long)
+                │ 1c length    │  free: estimated word timings → timeline fit. A script that
+                │    check     │  would run long/short is rewritten BEFORE any TTS is bought
+                └──────┬───────┘
+                       ▼
+                ┌──────────────┐
+                │ 2 narration  │  tts.rs: ElevenLabs eleven_v4 /with-timestamps, narrated
+                └──────┬───────┘  scenes only; audio tags for emotion; cached per scene
+                       ▼
+                ┌──────────────┐
+                │ 3 timeline   │  timeline.rs: slots summing to exactly 300.000s
+                └──────┬───────┘  (one rewrite if the real voice still misses)
                        ▼
                 ┌──────────────┐
                 │ 4 captions   │  subtitles.rs: ASS, word-by-word highlight
-                │   + music    │  optional ElevenLabs Music bed
+                │   + music    │  a track from the music library, mixed low
                 └──────┬───────┘
                        ▼
                 ┌──────────────┐
@@ -58,36 +69,135 @@ The blast radius of a mistake is one scene, not the whole video.
                 └──────┬───────┘  N scenes in parallel, safe fallback per scene
                        ▼
                 ┌──────────────┐
-                │ 6 compose    │  media.rs: one ffmpeg graph: xfade chain,
-                └──────┬───────┘  narration at exact offsets, ducked music,
-                       ▼          loudness normalisation, captions
-                   final.mp4
+                │ 6 master     │  media.rs: one ffmpeg graph: xfade chain, narration at
+                └──────┬───────┘  exact offsets, ducked music, loudness normalisation
+                       ├──────────────────────────────┐
+                       ▼                              ▼
+                ┌──────────────┐               ┌──────────────┐
+                │ 7 YouTube    │ burn captions │ 8 short      │ segment → 9:16 reframe,
+                └──────┬───────┘               └──────┬───────┘ title + vertical captions
+                       ▼                              ▼
+                   final.mp4 (16:9, 5:00)         short.mp4 (9:16, ≤ 59s)   + youtube.txt
 ```
 
-## The timing model (how "exactly 60s" works)
+## Writing five-minute scripts
 
-Each scene `i` gets a **slot** on the final timeline:
+One LLM call can write a tight 60-second script; a five-minute one drifts.
+So videos of `LONG_FORM_SECS` (120s) or more are written in two stages:
+
+1. **Outline**: title, theme, description, a niche **fit score** with its
+   reason, 5–6 chapters (name, goal, beats, the *wow* it lands, narrated
+   seconds) and which chapter becomes the short. Chapter 1 is a 15–30s cold
+   open; the last chapter pays off the hook.
+2. **Chapters**: each chapter is written in parallel with the whole plan as
+   context and its share of the word budget. Each is validated on its own
+   (word range, scene count, no back-to-back layouts, middle chapters must
+   show their wow with `fun_fact`, `scale` or `stat`, at most one silent
+   visual beat) and repaired with the problems fed back.
+
+The chapters are joined with a silent `chapter` card before each one after
+the cold open, and the short's scene range is recorded in the storyboard.
+Shorter targets still use the single-call writer.
+
+The channel brief lives in `src/niche.rs`: what fits (mechanisms,
+megastructures, systems, nature's engineering, everyday physics) and what
+is refused (news, politics, celebrities, opinion, advice, footage-dependent
+topics). `story_animator topics` asks for ideas against the same brief.
+
+## Saving TTS credits
+
+- **Silent scenes**: a scene with empty narration (chapter cards, and
+  "visual beats" with a `hold` of 3–6s) is never sent to ElevenLabs. About
+  a quarter to a third of the scenes in a typical video are silent.
+- **Free length check**: before narration, the timeline is fitted with
+  estimated word timings. If the script would need more than
+  `MAX_SPEECH_TEMPO` or leave dead air, it is rewritten at a scaled word
+  budget, which costs only LLM tokens.
+- **Caching**: each scene's audio is cached by text, voice and model.
+  Editing a storyboard and `resume`-ing pays only for changed scenes.
+- **The short is free**: it reuses the long video's narration.
+
+## Expressive narration
+
+The default model is `eleven_v4`, which follows inline **audio tags**. The
+writer starts most scenes with one tag (`[curious]`, `[impressed]`,
+`[serious]`, `[amazed]`…) and saves the excited ones for real wow moments.
+Tags are passed to ElevenLabs as part of the text. They are removed from
+word counts (`storyboard::spoken`) and from the returned character
+alignment (`tts::words_from_alignment`), so captions and cue matching only
+see spoken words. Neighbouring narrated scenes go along as
+`previous_text`/`next_text` so intonation flows across cuts. Voice settings
+leave more room for expression when the model supports tags.
+
+## The timing model (how "exactly 5:00" works)
+
+Each narrated scene `i` gets a **slot** on the final timeline:
 
 ```
 slot_i = lead_i + narration_i / tempo + tail_i
 ```
 
+A silent scene's slot is its `hold`.
+
 - `lead` is a short silence before the words (0.6s for the first scene, 0.35s otherwise).
 - `tail` is a breathing pause (≥ 0.45s; the last scene holds ≥ 1.8s as an outro).
-- If narration is short, the spare time (slack) is spread across the tails.
 - If narration is long, `tempo` rises up to `MAX_SPEECH_TEMPO` (1.15x, applied with pitch-preserving `atempo`).
-- If even that isn't enough, the writer is asked once to shorten the script.
+- If narration is short, the spare time is spread: up to 1.3s after each
+  narrated scene, then up to 2.5s on silent scenes, then up to 4s on the
+  outro, then evenly again. More than 3s of padding per scene means the
+  script is too short, which is an error (`TooShort`) rather than dead air.
 
 Slots always sum to exactly the target. Scene clips are rendered
 `slot + transition` long, except the last. The ffmpeg `xfade` for scene `i`
 starts at `start_i`. So the output length is:
 
 ```
-Σ clip_len − (n−1)·transition = Σ slot = 60.000s
+Σ clip_len − (n−1)·transition = Σ slot = 300.000s
 ```
 
 Narration clips are placed with `adelay` at `start_i + lead_i`, so audio
 and visuals never drift. Unit tests in `timeline.rs` lock this in.
+
+## One render, two formats
+
+The scenes are composited once into `master.mp4`: no captions,
+near-lossless (CRF 14). Both deliverables are cut from it:
+
+- **YouTube (16:9)**: the master with word-highlight captions burned in.
+- **Short (9:16)**: `pipeline::short_segment` takes the storyboard's short
+  range, drops leading/trailing silent scenes, trims whole scenes from the
+  end until it fits `SHORT_MAX_SECS` (59s), and extends with following
+  scenes if it's under 40s. The cut starts 0.2s into the first scene to
+  skip the crossfade tail. In the 1080x1920 frame:
+
+  ```
+    0 ┌──────────────┐
+      │  hook title  │  short's title (ASS, wraps)
+  600 ├══════════════┤  accent hairline
+      │  landscape   │  master, bottom 12% (the empty caption band) cropped,
+      │  video       │  scaled to the full 1080 width
+ 1134 ├══════════════┤  accent hairline
+      │  captions    │  vertical word-highlight captions, re-timed to the cut
+      │              │
+      │  CTA         │  "Full video on the channel" for the last 3.5s
+ 1920 └──────────────┘
+  ```
+
+  The rest of the frame is a blurred, darkened copy of the same video.
+  Audio fades in and out at the cut.
+
+Layouts reserve the bottom band of the landscape frame for captions, which
+is why the master can be captioned for YouTube and reframed for the short
+without anything colliding.
+
+## Background music
+
+`BACKGROUND_MUSIC=library` (the default) picks one track per video from
+`assets/music/`, chosen by the run id. `story_animator music` fills the
+library once with ElevenLabs Music: tracks a little longer than the video,
+with briefs suited to engineering explainers (wonder, circuit, scale,
+workshop). Music plays at `MUSIC_VOLUME` (0.07) and is sidechain-ducked
+under the narration, so it is only clearly audible during silent scenes.
 
 ## Visual orchestration
 
@@ -98,7 +208,11 @@ play X for r seconds") through `Ctx.at()`. Beat times come from
 
 1. each element's `cue` word is looked up in the narration (exact, then prefix match);
 2. elements without a found cue are interpolated between found ones;
-3. times are made monotonic, with minimum gaps, and kept inside the slot.
+3. times are made monotonic, with minimum gaps, and kept inside the slot;
+4. the first element never waits more than 0.9s after the narration starts
+   (`Ctx.first_by`), so a cue word late in the sentence can't leave an empty frame.
+
+Silent scenes have no words, so their elements spread across the hold.
 
 The director sorts the beats and plays them against the scene clock. Gaps
 become `wait()`s, during which ambient updaters (camera drift, floating
@@ -109,18 +223,19 @@ The clip is always padded or clamped to the exact spec duration.
 
 ```
 src/
-  main.rs        CLI (generate, storyboard, resume, serve, doctor, catalog)
+  main.rs        CLI (generate, storyboard, topics, music, resume, serve, doctor, catalog)
   config.rs      .env → Config (all knobs, defaults, validation)
   catalog.rs     loads the engine's vocabulary (single source of truth)
-  storyboard.rs  storyboard model, word budget, validation, normalisation
-  llm.rs         prompt + Gemini/DeepSeek + repair loop
-  tts.rs         ElevenLabs TTS with timestamps, voices, music, silent mode
-  timeline.rs    exact-duration fitting (unit-tested)
-  subtitles.rs   ASS captions with word highlight (unit-tested)
+  niche.rs       the channel brief + topic ideas
+  storyboard.rs  storyboard model, chapters, silent scenes, budgets, validation (unit-tested)
+  llm.rs         single-call writer, outline + parallel chapter writer, Gemini/DeepSeek, repair loops
+  tts.rs         ElevenLabs TTS with timestamps + audio tags, voices, music, silent mode
+  timeline.rs    exact-duration fitting incl. silent scenes (unit-tested)
+  subtitles.rs   ASS captions with word highlight, long and short layouts (unit-tested)
   custom.rs      LLM-written custom scenes: generate, validate, retry, cache
   render.rs      parallel engine processes, resume, fallback
-  media.rs       ffmpeg/ffprobe helpers + final compositor
-  pipeline.rs    the end-to-end run, run directory, caching
+  media.rs       ffmpeg/ffprobe helpers, master compositor, caption burn, short reframe
+  pipeline.rs    the end-to-end run, run directory, caching, short segment, youtube.txt
   jobs.rs        background job queue for the API
   server.rs      axum HTTP API
   doctor.rs      environment checks
@@ -130,11 +245,12 @@ engine/story_engine/
   fonts.py       fontconfig setup (bundled fonts; must run before manim import)
   theme.py       11 curated themes (each with font + style: diagram/infographic)
   stage.py       frame geometry (landscape/portrait), text + shape helpers
-  director.py    Ctx (cue timing, beats) + SpecScene (camera, scheduler)
+  director.py    Ctx (cue timing, first-reveal rule, beats) + SpecScene (camera, scheduler)
   layouts.py     12 general layouts + LAYOUT_DOCS (what the LLM may write)
   diagrams.py    equation, graph, vectors, dot_grid, network (3Blue1Brown style)
+  marvels.py     chapter, fun_fact, scale (long-form format)
   custom.py      sandbox checker, loader and API reference for custom scenes
-  icons.py       72 procedural icons + 260 synonyms
+  icons.py       86 procedural icons (incl. an engineering set) + ~330 synonyms
   characters.py  rigged characters: poses, expressions, blink, lip-flap
   backgrounds.py 12 animated backdrops (incl. glow / blueprint)
 ```
@@ -145,17 +261,28 @@ engine/story_engine/
 storage/runs/<run_id>/
   request.json        the original request (used by `resume`)
   storyboard.json     edit this, then `resume`
-  audio/scene_XX.mp3  narration, plus scene_XX.json (text, voice, word timings)
-  audio/music.mp3     if generated
+  audio/scene_XX.mp3  narration for narrated scenes, plus scene_XX.json (text, voice, model, word timings)
+  audio/music.mp3     if BACKGROUND_MUSIC=elevenlabs
   timeline.json       slots, offsets, tempo, per-scene word timings
   scenes/scene_XX.json/.mp4   render spec + clip (re-rendered only if the spec changed)
-  subtitles.ass
-  final.mp4
-  final.filtergraph.txt       the exact ffmpeg graph (handy for debugging)
+  master.mp4          clean composite (no captions); both outputs are cut from it
+  master.filtergraph.txt      the exact ffmpeg graph (handy for debugging)
+  subtitles.ass       captions for the long video
+  final.mp4           16:9 YouTube video
+  short.ass           title, captions and CTA for the short
+  short.mp4           9:16 short
+  short.filtergraph.txt
+  youtube.txt         title, description, chapter timestamps, short title
   result.json
 ```
 
 ## Performance notes
 
-- A 60s video at 1080p30 renders 8 scenes on 3–4 parallel processes in a few minutes; draft quality takes about 30 seconds.
+On the 6-core VPS (render concurrency 3):
+
+- A five-minute video has about 35 scenes. Draft quality (540p15) runs end
+  to end, including custom scenes and the short, in about 5 minutes.
+- At 1080p30, expect roughly 15–25 minutes, most of it scene rendering.
+  The master, caption burn and short are three ffmpeg encodes of a few
+  minutes in total.
 - Fonts are loaded through a generated fontconfig file. `manimpango.register_font` is avoided on purpose: on Windows it forces Pango to rebuild its font map for every new string (about 2.5s per `Text`).

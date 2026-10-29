@@ -1,0 +1,896 @@
+{
+  "title": "How Undersea Cables Carry 99% of Global Data",
+  "theme": "ocean",
+  "music": "driving synth pulse, atmospheric water-like ambient textures, building momentum",
+  "description": "Over 99% of international internet traffic doesn't fly through space—it travels through thin glass threads lying on the ocean floor. Explore the extreme physics of total internal reflection and the engineering that keeps these subsea cables alive under thousands of pounds of pressure.",
+  "chapters": [
+    "The Invisible Grid",
+    "Trapping Light",
+    "The Armor Layers",
+    "Laser Boosters",
+    "Laying and Repairing",
+    "The Speed of Click"
+  ],
+  "short": {
+    "from": 11,
+    "to": 16,
+    "title": "How Internet Cables Survive Deep Oceans"
+  },
+  "scenes": [
+    {
+      "narration": "[amazed] Over ninety nine percent of all transoceanic internet traffic travels not through space, but along the ocean floor.",
+      "layout": "stat",
+      "title": "The Invisible Grid",
+      "background": "stars",
+      "camera": "push_in",
+      "transition": "fade",
+      "chapter": 0,
+      "content": {
+        "context": "Global data reliance on undersea cables",
+        "cue": "ninety",
+        "decimals": 0,
+        "label": "Transoceanic internet data underwater",
+        "suffix": "%",
+        "value": 99
+      }
+    },
+    {
+      "narration": "[curious] A web of five hundred active cables spans the globe, yet each line is barely thicker than a garden hose.",
+      "layout": "scale",
+      "title": "Scale Comparison",
+      "background": "blueprint",
+      "camera": "drift",
+      "transition": "slideleft",
+      "chapter": 0,
+      "content": {
+        "callout": "Nearly identical size",
+        "callout_cue": "thicker",
+        "items": [
+          {
+            "cue": "cables",
+            "display": "17 mm",
+            "icon": "globe",
+            "label": "Ocean Cable",
+            "value": 17
+          },
+          {
+            "cue": "hose",
+            "display": "19 mm",
+            "icon": "drop",
+            "label": "Garden Hose",
+            "value": 19
+          }
+        ],
+        "unit": "mm"
+      }
+    },
+    {
+      "narration": "[impressed] Beaming signals to satellite constellations adds severe latency, while optical ocean floor lines transmit near the speed of light.",
+      "layout": "compare",
+      "title": "Speed and Latency",
+      "background": "glow",
+      "camera": "pan_right",
+      "transition": "wipeleft",
+      "chapter": 0,
+      "content": {
+        "left": {
+          "cue": "satellite",
+          "icon": "satellite",
+          "label": "Satellites",
+          "points": [
+            "High latency",
+            "35,000 km orbit",
+            "Lower bandwidth"
+          ]
+        },
+        "right": {
+          "cue": "light",
+          "icon": "globe",
+          "label": "Undersea Cables",
+          "points": [
+            "Ultra low latency",
+            "Direct path",
+            "Massive capacity"
+          ]
+        },
+        "winner": "right",
+        "winner_cue": "light"
+      }
+    },
+    {
+      "narration": "",
+      "layout": "chapter",
+      "background": "glow",
+      "camera": "push_in",
+      "transition": "fadeblack",
+      "hold": 3.2,
+      "chapter": 1,
+      "content": {
+        "icon": "zap",
+        "name": "Trapping Light",
+        "number": 1,
+        "total": 5
+      }
+    },
+    {
+      "narration": "[curious] Deep inside the underwater cable lies a pure glass core just eight microns wide, making it nearly ten times thinner than a human hair.",
+      "layout": "scale",
+      "title": "Microscopic Glass Core",
+      "background": "blueprint",
+      "camera": "push_in",
+      "transition": "fade",
+      "chapter": 1,
+      "content": {
+        "callout": "8.7x thinner",
+        "callout_cue": "thinner",
+        "items": [
+          {
+            "cue": "core",
+            "display": "8 μm",
+            "icon": "ruler",
+            "label": "Glass Core",
+            "value": 8
+          },
+          {
+            "cue": "hair",
+            "display": "70 μm",
+            "icon": "person",
+            "label": "Human Hair",
+            "value": 70
+          }
+        ],
+        "unit": "μm"
+      }
+    },
+    {
+      "narration": "[thoughtful] Surrounding this thin core is a glass cladding with a lower refractive index. Instead of escaping, light hitting the boundary is forced to bend back inside.",
+      "layout": "compare",
+      "title": "Core vs Cladding Boundary",
+      "background": "glow",
+      "camera": "drift",
+      "transition": "slideleft",
+      "chapter": 1,
+      "content": {
+        "left": {
+          "cue": "escaping",
+          "icon": "cross",
+          "label": "Standard Glass",
+          "points": [
+            "Single layer",
+            "Light escapes surface",
+            "High signal loss"
+          ]
+        },
+        "right": {
+          "cue": "cladding",
+          "icon": "check",
+          "label": "Cladding Boundary",
+          "points": [
+            "Dual glass layers",
+            "Lower refraction index",
+            "Traps light inside core"
+          ]
+        },
+        "winner": "right",
+        "winner_cue": "forced"
+      }
+    },
+    {
+      "narration": "[excited] Striking the boundary above the critical angle triggers total internal reflection, trapping the light ray so it zig-zags cleanly across thousands of miles.",
+      "layout": "custom",
+      "title": "Total Internal Reflection",
+      "background": "grid",
+      "camera": "static",
+      "transition": "wipeleft",
+      "chapter": 1,
+      "content": {
+        "brief": "Cross-section of an optical core and cladding cylinder. A laser beam enters from the left at a low angle. When the ray strikes the top cladding boundary at a shallow critical angle, a bright reflection pulse triggers, causing the light to bounce cleanly back into the core in a repeating cyan zig-zag path on the word zig-zags.",
+        "fallback": {
+          "content": {
+            "functions": [
+              {
+                "color": "accent",
+                "cue": "ray",
+                "expr": "abs(sin(3*x))",
+                "label": "Light Ray Path"
+              }
+            ],
+            "x_label": "Distance",
+            "x_range": [
+              0,
+              6
+            ],
+            "y_label": "Core Width",
+            "y_range": [
+              -1.5,
+              1.5
+            ]
+          },
+          "layout": "graph"
+        }
+      }
+    },
+    {
+      "narration": "",
+      "layout": "network",
+      "background": "glow",
+      "camera": "drift",
+      "transition": "dissolve",
+      "hold": 4.0,
+      "chapter": 1,
+      "content": {
+        "edges": [
+          [
+            0,
+            1
+          ],
+          [
+            0,
+            2
+          ],
+          [
+            1,
+            3
+          ],
+          [
+            2,
+            3
+          ]
+        ],
+        "layer_labels": [
+          "Input",
+          "Core",
+          "Cladding",
+          "Output"
+        ],
+        "layers": [
+          1,
+          2,
+          2,
+          1
+        ]
+      }
+    },
+    {
+      "narration": "[impressed] High-speed laser transmitters pulse this trapped light billions of times every single second, converting basic flashes into massive binary data streams.",
+      "layout": "stat",
+      "title": "Data Transmission Speed",
+      "background": "blueprint",
+      "camera": "push_in",
+      "transition": "zoomin",
+      "chapter": 1,
+      "content": {
+        "context": "Light pulses flashing per second per fiber strand",
+        "cue": "billions",
+        "decimals": 0,
+        "label": "Binary Flashes Per Second",
+        "prefix": ">",
+        "suffix": " Billion",
+        "value": 10
+      }
+    },
+    {
+      "narration": "[amazed] This ultra-pure silica glass is so unbelievably clear that if ocean water matched its transparency, you could see the seabed five miles down.",
+      "layout": "fun_fact",
+      "background": "rays",
+      "camera": "pull_out",
+      "transition": "circleopen",
+      "chapter": 1,
+      "content": {
+        "fact": "If ocean water were as pure as silica fiber, you could see the seabed 5 miles below.",
+        "highlight": "5 miles",
+        "highlight_cue": "miles",
+        "icon": "drop",
+        "kind": "engineering marvel"
+      }
+    },
+    {
+      "narration": "",
+      "layout": "chapter",
+      "background": "glow",
+      "camera": "push_in",
+      "transition": "fadeblack",
+      "hold": 3.2,
+      "chapter": 2,
+      "content": {
+        "icon": "shield",
+        "name": "The Armor Layers",
+        "number": 2,
+        "total": 5
+      }
+    },
+    {
+      "narration": "[curious] Three miles down on the ocean floor, water exerts six thousand pounds of crushing pressure on every square inch.",
+      "layout": "stat",
+      "title": "Crushing Deep Pressures",
+      "background": "glow",
+      "camera": "push_in",
+      "transition": "fade",
+      "chapter": 2,
+      "content": {
+        "context": "400 times atmospheric pressure",
+        "cue": "pressure",
+        "decimals": 0,
+        "label": "Pressure at ocean floor",
+        "suffix": " PSI",
+        "value": 6000
+      }
+    },
+    {
+      "narration": "[thoughtful] To shield fragile optical fibers, the structure layers outward like an onion, surrounding them with waterproof jelly, a copper conductor, and steel strands.",
+      "layout": "custom",
+      "title": "Concentric Armor Layers",
+      "background": "blueprint",
+      "camera": "drift",
+      "transition": "slideleft",
+      "chapter": 2,
+      "content": {
+        "brief": "Concentric cross-section ring diagram peeling back layer by layer: central glass fibers glow cyan, wrapped in yellow petroleum jelly, enclosed in orange copper tube, wrapped in grey steel strength strands, clad in outer polyethylene sleeve. Rings expand as named.",
+        "fallback": {
+          "content": {
+            "items": [
+              {
+                "cue": "fibers",
+                "icon": "lightbulb",
+                "text": "Glass fibers for optical signal"
+              },
+              {
+                "cue": "jelly",
+                "icon": "drop",
+                "text": "Waterproof jelly padding tube"
+              },
+              {
+                "cue": "copper",
+                "icon": "lightning",
+                "text": "Copper tube conducting electricity"
+              },
+              {
+                "cue": "steel",
+                "icon": "shield",
+                "text": "Steel strands providing tension"
+              }
+            ]
+          },
+          "layout": "list"
+        }
+      }
+    },
+    {
+      "narration": "[surprised] Near coastal shores, cables carry heavy steel armor to resist ship anchors. But deep underwater, where human threats vanish, the design becomes surprisingly lightweight.",
+      "layout": "compare",
+      "title": "Coastal vs Deep Sea",
+      "background": "gradient",
+      "camera": "pan_right",
+      "transition": "dissolve",
+      "chapter": 2,
+      "content": {
+        "left": {
+          "cue": "coastal",
+          "icon": "shield",
+          "label": "Coastal Cable",
+          "points": [
+            "Double steel armor",
+            "Resists ship anchors",
+            "Heavy protection"
+          ]
+        },
+        "right": {
+          "cue": "deep",
+          "icon": "drop",
+          "label": "Deep-Sea Cable",
+          "points": [
+            "Unarmored sleeve",
+            "Lightweight design",
+            "Hydrostatic balance"
+          ]
+        },
+        "winner": "right",
+        "winner_cue": "lightweight"
+      }
+    },
+    {
+      "narration": "[amazed] Deep sea cable sections are only seventeen millimeters wide, roughly the diameter of a marker, despite resting under three miles of crushing ocean water.",
+      "layout": "fun_fact",
+      "background": "glow",
+      "camera": "push_in",
+      "transition": "zoomin",
+      "chapter": 2,
+      "content": {
+        "fact": "Deep-sea cables are only 17 millimeters wide, roughly the diameter of a marker.",
+        "highlight": "17 millimeters",
+        "highlight_cue": "seventeen",
+        "icon": "drop",
+        "kind": "engineering marvel"
+      }
+    },
+    {
+      "narration": "",
+      "layout": "scale",
+      "background": "blueprint",
+      "camera": "drift",
+      "transition": "fade",
+      "hold": 4.0,
+      "chapter": 2,
+      "content": {
+        "callout": "Actual Scale",
+        "callout_cue": "",
+        "items": [
+          {
+            "cue": "",
+            "display": "0.125 mm",
+            "icon": "atom",
+            "label": "Optical Core",
+            "value": 0.125
+          },
+          {
+            "cue": "",
+            "display": "17 mm",
+            "icon": "drop",
+            "label": "Deep-Sea Cable",
+            "value": 17
+          },
+          {
+            "cue": "",
+            "display": "50 mm",
+            "icon": "shield",
+            "label": "Coastal Armored",
+            "value": 50
+          }
+        ],
+        "unit": "mm"
+      }
+    },
+    {
+      "narration": "[impressed] By filling hollow gaps with dense jelly inside a rigid steel tube, intense hydrostatic pressure pushes inward equally, keeping the delicate core intact.",
+      "layout": "flow",
+      "title": "Defeating Ocean Pressure",
+      "background": "glow",
+      "camera": "pull_out",
+      "transition": "slideup",
+      "chapter": 2,
+      "content": {
+        "steps": [
+          {
+            "cue": "jelly",
+            "icon": "drop",
+            "label": "Dense Jelly Fill"
+          },
+          {
+            "cue": "tube",
+            "icon": "shield",
+            "label": "Steel Support Tube"
+          },
+          {
+            "cue": "pressure",
+            "icon": "lightning",
+            "label": "Equal Pressure Push"
+          },
+          {
+            "cue": "core",
+            "icon": "check",
+            "label": "Intact Fiber Core"
+          }
+        ]
+      }
+    },
+    {
+      "narration": "",
+      "layout": "chapter",
+      "background": "glow",
+      "camera": "push_in",
+      "transition": "fadeblack",
+      "hold": 3.2,
+      "chapter": 3,
+      "content": {
+        "icon": "cpu",
+        "name": "Laser Boosters",
+        "number": 3,
+        "total": 5
+      }
+    },
+    {
+      "narration": "[thoughtful] As light pulses race through ultra pure silica glass, tiny impurities still cause the optical signal to dim significantly after traveling just sixty miles.",
+      "layout": "graph",
+      "title": "Signal Loss Over Distance",
+      "background": "glow",
+      "camera": "drift",
+      "transition": "fade",
+      "chapter": 3,
+      "content": {
+        "functions": [
+          {
+            "color": "accent",
+            "cue": "dim",
+            "expr": "100 * exp(-0.03 * x)",
+            "label": "\\text{Signal Power}"
+          }
+        ],
+        "points": [
+          {
+            "cue": "sixty",
+            "label": "\\text{Boost needed}",
+            "x": 60
+          }
+        ],
+        "x_label": "Distance (miles)",
+        "x_range": [
+          0,
+          100
+        ],
+        "y_label": "Power (%)",
+        "y_range": [
+          0,
+          100
+        ]
+      }
+    },
+    {
+      "narration": "[curious] To span thousands of miles across dark abyssal ocean floors, engineers install heavy duty titanium repeaters spaced at strict intervals of roughly fifty miles apart.",
+      "layout": "hero",
+      "title": "Deep Sea Repeaters",
+      "background": "waves",
+      "camera": "push_in",
+      "transition": "slideleft",
+      "chapter": 3,
+      "content": {
+        "effect": "pulse",
+        "effect_cue": "repeaters",
+        "icon": "lightning",
+        "label": "Optical Repeater",
+        "tag": "50 Mile Spacing"
+      }
+    },
+    {
+      "narration": "[excited] Inside each repeater, an internal pump laser energizes embedded erbium atoms, forcing them to release matching photons that multiply the incoming light without converting it into electricity.",
+      "layout": "custom",
+      "title": "Atomic Light Amplification",
+      "background": "blueprint",
+      "camera": "static",
+      "transition": "dissolve",
+      "chapter": 3,
+      "content": {
+        "brief": "Cross section of Erbium-Doped Fiber Amplifier. Left side shows faint red light pulse entering. On word 'laser', a 980nm pump laser beam fires into the optical core. On word 'erbium', green erbium ions glow bright blue with excited energy. On word 'light', stimulated emission triggers a cascade of matching red photons, emitting a concentrated bright pulse to the right.",
+        "fallback": {
+          "content": {
+            "steps": [
+              {
+                "cue": "laser",
+                "icon": "lightning",
+                "label": "Pump Laser"
+              },
+              {
+                "cue": "erbium",
+                "icon": "atom",
+                "label": "Erbium Ions"
+              },
+              {
+                "cue": "light",
+                "icon": "sun",
+                "label": "Boosted Light"
+              }
+            ]
+          },
+          "layout": "flow"
+        }
+      }
+    },
+    {
+      "narration": "",
+      "layout": "network",
+      "background": "blueprint",
+      "camera": "drift",
+      "transition": "fade",
+      "hold": 4.0,
+      "chapter": 3,
+      "content": {
+        "layer_labels": [
+          "Input",
+          "Laser",
+          "Erbium",
+          "Output"
+        ],
+        "layers": [
+          2,
+          3,
+          3,
+          2
+        ],
+        "pulses": [
+          {
+            "cue": ""
+          }
+        ]
+      }
+    },
+    {
+      "narration": "[amazed] To continuously power these amplifiers thousands of feet underwater, high voltage shore stations inject up to ten thousand volts of electricity along the outer copper conductor.",
+      "layout": "stat",
+      "title": "Powering the Seabed",
+      "background": "glow",
+      "camera": "pull_out",
+      "transition": "wipeleft",
+      "chapter": 3,
+      "content": {
+        "context": "Direct current flowing down outer copper sheath",
+        "cue": "volts",
+        "decimals": 0,
+        "label": "Volts DC Cable Power Supply",
+        "value": 10000
+      }
+    },
+    {
+      "narration": "[impressed] By amplifying light directly with light, these quantum boosters enable trillions of digital bits to stream effortlessly across thousands of miles of deep ocean seabed.",
+      "layout": "fun_fact",
+      "background": "stars",
+      "camera": "push_in",
+      "transition": "circleopen",
+      "chapter": 3,
+      "content": {
+        "fact": "Repeaters use rare earth Erbium atoms to amplify light directly with light powered by 10,000 volts",
+        "highlight": "directly with light",
+        "highlight_cue": "light",
+        "icon": "lightbulb",
+        "kind": "engineering marvel"
+      }
+    },
+    {
+      "narration": "",
+      "layout": "chapter",
+      "background": "glow",
+      "camera": "push_in",
+      "transition": "fadeblack",
+      "hold": 3.2,
+      "chapter": 4,
+      "content": {
+        "icon": "anchor",
+        "name": "Laying and Repairing",
+        "number": 4,
+        "total": 5
+      }
+    },
+    {
+      "narration": "[thoughtful] Heavy cable ships slowly spool thousands of miles of fiber onto the seabed, dropping it smoothly across ocean basins.",
+      "layout": "hero",
+      "title": "Spooling Across the Sea",
+      "background": "waves",
+      "camera": "drift",
+      "transition": "fade",
+      "chapter": 4,
+      "content": {
+        "effect": "pulse",
+        "effect_cue": "spool",
+        "icon": "ship",
+        "label": "Cable Spooling Ship",
+        "tag": "Transoceanic"
+      }
+    },
+    {
+      "narration": "[curious] Near shallow coastlines, an underwater plow digs a three foot trench into sediment, hiding the cable safely from drag anchors.",
+      "layout": "custom",
+      "title": "Protecting Coastal Lines",
+      "background": "blueprint",
+      "camera": "push_in",
+      "transition": "slideleft",
+      "chapter": 4,
+      "content": {
+        "brief": "A metallic underwater seabed plow moving left to right on sandy seabed. On word 'plow', plow illuminates in bright teal. On word 'trench', trench cuts 3 feet into sediment. On word 'anchors', a ship anchor drops from top and slides safely over the buried cable.",
+        "fallback": {
+          "content": {
+            "left": {
+              "cue": "anchors",
+              "icon": "warning",
+              "label": "Exposed Cable",
+              "points": [
+                "Exposed to anchors",
+                "Shallow waters",
+                "High risk"
+              ]
+            },
+            "right": {
+              "cue": "plow",
+              "icon": "shield",
+              "label": "Trenched Cable",
+              "points": [
+                "Buried 3 feet deep",
+                "Protected sediment",
+                "Safe path"
+              ]
+            },
+            "winner": "right",
+            "winner_cue": "hiding"
+          },
+          "layout": "compare"
+        }
+      }
+    },
+    {
+      "narration": "[serious] If a break occurs, specialized vessels drop robotic submersibles to locate the severed line and hook both ends.",
+      "layout": "flow",
+      "title": "Locating Deep Breaks",
+      "background": "glow",
+      "camera": "pan_right",
+      "transition": "dissolve",
+      "chapter": 4,
+      "content": {
+        "steps": [
+          {
+            "cue": "vessels",
+            "icon": "ship",
+            "label": "Deploy Ship"
+          },
+          {
+            "cue": "robotic",
+            "icon": "drone",
+            "label": "ROV Deep Search"
+          },
+          {
+            "cue": "hook",
+            "icon": "wrench",
+            "label": "Hook Cable Ends"
+          }
+        ]
+      }
+    },
+    {
+      "narration": "[impressed] Up on deck, engineers align microscopic glass threads in portable cleanrooms, fusing the broken strands back together with electric arcs.",
+      "layout": "list",
+      "title": "High-Precision Splicing",
+      "background": "grid",
+      "camera": "static",
+      "transition": "slideup",
+      "chapter": 4,
+      "content": {
+        "items": [
+          {
+            "cue": "engineers",
+            "icon": "person",
+            "text": "Align sub-millimeter glass core"
+          },
+          {
+            "cue": "cleanrooms",
+            "icon": "house",
+            "text": "Work in shipboard cleanroom"
+          },
+          {
+            "cue": "fusing",
+            "icon": "lightning",
+            "text": "Fuse with electric arc"
+          }
+        ]
+      }
+    },
+    {
+      "narration": "[amazed] Ships can snag snapped cables from three miles deep using heavy grapnel hooks, splicing tiny fibers with sub millimeter precision.",
+      "layout": "fun_fact",
+      "background": "glow",
+      "camera": "pull_out",
+      "transition": "zoomin",
+      "chapter": 4,
+      "content": {
+        "fact": "Ships snag snapped cables from 3 miles deep and splice fibers with sub-millimeter precision.",
+        "highlight": "sub millimeter",
+        "highlight_cue": "snag",
+        "icon": "crane",
+        "kind": "engineering marvel"
+      }
+    },
+    {
+      "narration": "",
+      "layout": "chapter",
+      "background": "glow",
+      "camera": "push_in",
+      "transition": "fadeblack",
+      "hold": 3.2,
+      "chapter": 5,
+      "content": {
+        "icon": "activity",
+        "name": "The Speed of Click",
+        "number": 5,
+        "total": 5
+      }
+    },
+    {
+      "narration": "[thoughtful] Every click on your phone races through underground conduits, plunges across the ocean floor, and hits distant servers.",
+      "layout": "flow",
+      "title": "The Journey of a Click",
+      "background": "waves",
+      "camera": "pan_right",
+      "transition": "fade",
+      "chapter": 5,
+      "content": {
+        "steps": [
+          {
+            "cue": "phone",
+            "icon": "phone",
+            "label": "Phone Request"
+          },
+          {
+            "cue": "conduits",
+            "icon": "pylon",
+            "label": "Street Conduit"
+          },
+          {
+            "cue": "ocean",
+            "icon": "globe",
+            "label": "Seabed Cable"
+          },
+          {
+            "cue": "servers",
+            "icon": "laptop",
+            "label": "Data Center"
+          }
+        ]
+      }
+    },
+    {
+      "narration": "[amazed] This incredible journey covers four thousand miles in just sixty milliseconds, making modern global connection feel completely instantaneous.",
+      "layout": "stat",
+      "title": "Instant Latency",
+      "background": "glow",
+      "camera": "push_in",
+      "transition": "slideleft",
+      "chapter": 5,
+      "content": {
+        "context": "Across four thousand miles of ocean floor",
+        "cue": "milliseconds",
+        "decimals": 0,
+        "label": "Round-trip speed",
+        "suffix": " ms",
+        "value": 60
+      }
+    },
+    {
+      "narration": "",
+      "layout": "network",
+      "background": "stars",
+      "camera": "drift",
+      "transition": "dissolve",
+      "hold": 4.0,
+      "chapter": 5,
+      "content": {
+        "edges": [
+          [
+            0,
+            1
+          ],
+          [
+            1,
+            2
+          ],
+          [
+            2,
+            3
+          ],
+          [
+            3,
+            0
+          ]
+        ],
+        "nodes": [
+          "New York",
+          "London",
+          "Tokyo",
+          "Sydney"
+        ],
+        "pulses": [
+          {
+            "cue": ""
+          }
+        ]
+      }
+    },
+    {
+      "narration": "[impressed] Below the waves, a quiet glass thread seamlessly keeps our digital world connected.",
+      "layout": "title",
+      "background": "blueprint",
+      "camera": "pull_out",
+      "transition": "fadeblack",
+      "chapter": 5,
+      "content": {
+        "heading": "The Speed of Click",
+        "icon": "globe",
+        "subheading": "The silent glass web linking our world"
+      }
+    }
+  ]
+}

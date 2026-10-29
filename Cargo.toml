@@ -2,7 +2,7 @@
 name = "story_animator"
 version = "2.0.0"
 edition = "2024"
-description = "Topic in, polished 60-second 2D animated video out."
+description = "Topic in: a five-minute animated explainer plus a vertical short out."
 
 [dependencies]
 axum = "0.7"

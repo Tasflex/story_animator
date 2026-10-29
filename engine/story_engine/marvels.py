@@ -33,6 +33,7 @@ from manim import (
 )
 
 from .director import Ctx
+from .icons import resolve_icon
 from .stage import fill, fit
 
 POP = rate_functions.ease_out_back
@@ -138,7 +139,7 @@ def layout_chapter(ctx: Ctx):
         dots.arrange(RIGHT, buff=0.32)
         parts.add(dots)
     icon_grp = None
-    if c.get("icon"):
+    if c.get("icon") and resolve_icon(str(c["icon"])):  # no lettered fallback badge on a title card
         icon = ctx.icon(c["icon"], size=1.5 if not st.portrait else 1.8)
         icon_grp = VGroup(_halo(ctx, icon), icon)
         parts.submobjects.insert(0, icon_grp)

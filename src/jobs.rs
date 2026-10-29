@@ -1,4 +1,4 @@
-//! In-memory job queue for the HTTP API. A 60s video takes minutes, so the
+//! In-memory job queue for the HTTP API. A five-minute video takes a while to render, so the
 //! API accepts a job, returns its id immediately, and runs it in the
 //! background with at most MAX_CONCURRENT_JOBS at once.
 

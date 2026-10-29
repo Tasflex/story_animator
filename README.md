@@ -1,48 +1,67 @@
 # Story Animator
 
-**Topic in, polished 60-second 2D animated video out.**
+**Topic in: a five-minute animated explainer for YouTube (16:9) and a vertical short (9:16) out.**
 
 ```bash
-story_animator generate "How do black holes form?"
+story_animator generate "How undersea fiber cables carry the internet"
 ```
 
-That one command writes a script, narrates it, animates it scene by scene,
-and delivers an MP4 that is **exactly 60.00 seconds** long. It has
-word-synced visuals, word-by-word captions, crossfade transitions and optional
-background music, in 16:9 or 9:16 (Shorts, Reels, TikTok).
+That one command plans the video in chapters, writes the script, narrates it
+with an expressive voice, animates it scene by scene, and delivers:
+
+- `final.mp4`: **exactly 5:00**, 1920x1080, with chapters, word-highlight captions and quiet background music
+- `short.mp4`: a **59-second-or-less** 1080x1920 short cut from the *same* render, with a hook title and vertical captions
+- `youtube.txt`: title, description and chapter timestamps, ready to paste
 
 ---
+
+## The channel: engineering marvels and how things work
+
+Targeting everything is targeting nothing. Story Animator makes one kind of
+video well: **how machines, structures, systems and nature's engineering
+work**, explained with animated diagrams and made memorable with fun facts,
+records and true-scale comparisons.
+
+- Every topic is scored against the channel brief while it is planned
+  ([src/niche.rs](src/niche.rs)). Off-niche topics (news, celebrities,
+  opinions, advice) are refused with the reason; `--force` overrides.
+- `story_animator topics` suggests topics that suit the format, each with a hook and three wow facts.
+- Every middle chapter must land a "wow" on screen (`fun_fact`, `scale` or `stat`).
 
 ## What you get
 
 | | |
 |---|---|
-| **Exact length** | Every video lands on `TARGET_DURATION_SECS` (60s) to the frame. Narration is measured, pauses are distributed, and over-long scripts are gently sped up or sent back to the writer. |
-| **Two visual styles** | **diagram** (the default): 3Blue1Brown-like, with serif type, LaTeX maths, graphs, vectors, dot populations, networks and navy glow. **infographic**: flat icons, cards and characters. |
-| **Orchestrated visuals** | Each element appears *as the narrator says its name*, driven by ElevenLabs word timestamps. |
-| **17 animated layouts + custom scenes** | Diagram: equation, graph, vectors, dot_grid, network. General: title, hero, icon_row, list, compare, stat, bar_chart, flow, timeline, character, quote, cycle. Plus **custom**: the AI writes a one-off animation for one scene, which is safety-checked and test-run, with a fallback layout if it fails. |
-| **72 vector icons, 11 themes, 12 animated backgrounds, 6 camera moves, 14 transitions** | All drawn procedurally, so nothing has to be downloaded and everything follows the theme colours. |
-| **Rigged characters** | Poses, expressions, blinking, and a mouth that moves only while words are spoken. |
-| **Captions** | Burned-in, with the currently spoken word highlighted in the theme accent. |
+| **Five-minute videos, built in chapters** | An outline comes first (chapters, the wow each lands, which chapter becomes the short), then each chapter is written in parallel against its own word budget. Silent chapter cards separate the acts. |
+| **Exact length** | Every video lands on `TARGET_DURATION_SECS` (300s) to the frame. Narration is measured, pauses are spread, and a script that would run long or short is rewritten before any narration is paid for. |
+| **Expressive narration** | ElevenLabs `eleven_v4` with audio tags (`[curious]`, `[amazed]`, `[serious]`…) chosen per scene by the writer. Tags never show in captions. |
+| **Fewer TTS credits** | Silent scenes (chapter cards, visual beats where the animation speaks for itself) are never sent to ElevenLabs. Narration is cached per scene, so edits and re-runs only pay for what changed. `--silent` previews cost nothing. |
+| **One render, two formats** | A clean master is rendered once. Captions are burned onto it for YouTube, and the short is cut from it: the landscape frame sits full-width in a 9:16 canvas over a blurred fill, with the title above and captions below. No second render. |
+| **Orchestrated visuals** | Each element appears as the narrator says its name, driven by word timestamps, and every scene shows something within about a second. |
+| **21 animated layouts + custom scenes** | Long-form: chapter, fun_fact, scale. Diagram: equation, graph, vectors, dot_grid, network. General: title, hero, icon_row, list, compare, stat, bar_chart, flow, timeline, character, quote, cycle. Plus **custom**: the AI writes a one-off animation for one scene, which is safety-checked and test-run, with a fallback layout if it fails. |
+| **86 vector icons** | Including an engineering set (bridge, tower, dam, wind turbine, crane, ship, train, jet engine, satellite, pylon…), drawn procedurally in theme colours. 11 themes, 12 animated backgrounds, 6 camera moves, 14 transitions. |
+| **Background music** | A small library of tracks generated once with ElevenLabs Music (`story_animator music`), reused across videos, mixed low and ducked under the voice. |
 | **Robust rendering** | Scenes render in parallel as independent processes. A failing scene falls back to a safe layout instead of killing the video. |
-| **Resumable runs** | Edit a storyboard and re-run: only changed scenes are re-narrated or re-rendered. |
 | **CLI + HTTP API** | Use it from the terminal or as a job-queue service. |
 
 ## How it works
 
 ```
- topic ──► LLM storyboard (JSON) ──► ElevenLabs TTS + word timings ──► timeline fit (= 60.000s)
-                                                                              │
-     final.mp4 ◄── ffmpeg: crossfades · narration · music · captions ◄── Manim scenes (parallel)
+ topic ─► niche fit + outline ─► chapters (parallel) ─► free length check ─► ElevenLabs v4 (narrated scenes only)
+                                                                                   │
+            timeline fit (= 300.000s) ◄────────────────────────────────────────────┘
+                    │
+                    ▼
+     Manim scenes (parallel) ─► master.mp4 ─┬─► + captions ─────────────────► final.mp4   (16:9, 5:00)
+                                             └─► segment ─► 9:16 reframe ────► short.mp4   (≤ 59s)
 ```
 
 The LLM mostly writes **data**: a structured storyboard using the vocabulary
 the engine supports, which a deterministic Python/Manim engine turns into
-animation. For the odd scene that needs a bespoke diagram (a drone's rotors,
-a shape being cut and rearranged), it writes code for **that one scene**.
-The code is sandbox-checked, dry-run, retried with the error, and falls back
-to a safe layout if it still fails, so one bad diagram can never break the
-video. Read more in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+animation. For the odd scene that needs a bespoke diagram (a repeater's
+insides, a cable's cross-section), it writes code for **that one scene**,
+which is sandbox-checked, dry-run, retried with the error, and replaced by
+a safe layout if it still fails. Read more in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Quick start
 
@@ -50,75 +69,71 @@ video. Read more in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 - **Rust** 1.85+ (`rustup`)
 - **Python** 3.10–3.12
-- **ffmpeg + ffprobe**: a full build with libass (Windows: [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) "full"; macOS: `brew install ffmpeg`; Linux: your distro's `ffmpeg`)
-- Manim's system dependencies. On Linux: `sudo apt install libcairo2-dev libpango1.0-dev pkg-config`. Windows and macOS wheels include them.
-- *(Recommended)* **LaTeX** for typeset maths in the diagram style: MiKTeX (Windows), MacTeX, or `texlive` + `dvisvgm`. Without it, equations render as plain italic text.
+- **ffmpeg + ffprobe**: a full build with libass (Linux: your distro's `ffmpeg`)
+- Manim's system dependencies. On Linux: `sudo apt install libcairo2-dev libpango1.0-dev pkg-config`
+- *(Recommended)* **LaTeX** for typeset maths: `texlive` + `dvisvgm`. Without it, equations render as plain italic text.
 
 ### 2. Install
 
 ```bash
 git clone <repo> story_animator && cd story_animator
 
-python -m venv venv
-# Windows:  venv\Scripts\activate      macOS/Linux:  source venv/bin/activate
-pip install -r engine/requirements.txt
+python3 -m venv venv
+venv/bin/pip install -r engine/requirements.txt
 
 cargo build --release
 cp .env.example .env        # then add your API keys
 ```
 
-### 3. Check your setup
+### 3. Check your setup and fill the music library
 
 ```bash
-cargo run --release -- doctor
+target/release/story_animator doctor
+target/release/story_animator music      # once: generates 3 background tracks into assets/music
 ```
 
 ```
-[ok  ] engine   {"ok": true, "manim": "0.21.0", "font": "Poppins", "layouts": 18}
+[ok  ] engine   {"ok": true, "manim": "0.21.0", "font": "Poppins", "layouts": 21}
 [ok  ] ffmpeg   all required filters present
-[ok  ] ffprobe  ok
-[ok  ] fonts    assets/fonts
-[ok  ] llm      gemini (gemini-2.5-flash) + deepseek fallback
-[ok  ] tts      elevenlabs (eleven_multilingual_v2), voice auto
-[ok  ] music    none
+[ok  ] llm      gemini (gemini-3.5-flash) + deepseek fallback
+[ok  ] tts      elevenlabs (eleven_v4), voice JBFqnCBsd6RMkjVDRZzb
+[ok  ] music    library: 3 track(s) in assets/music
 ```
 
 ### 4. Make videos
 
 ```bash
-# Free previews: no API calls, silent narration, 540p. About 30 seconds each.
-story_animator generate --storyboard examples/base_rate.json --silent -q draft   # diagram style
-story_animator generate --storyboard examples/bees.json --silent -q draft        # infographic style
+# Ideas that fit the channel
+story_animator topics
+story_animator topics --area "bridges and tunnels" --count 5
 
-# The real thing (diagram style by default)
-story_animator generate "Why do we dream?" -o dreams.mp4
+# Review the script before spending TTS credits (recommended)
+story_animator storyboard "How a mechanical watch keeps time" -o watch.json
+#   ...read/edit watch.json...
+story_animator generate --storyboard watch.json --silent -q draft    # free preview, ~5 minutes
+story_animator generate --storyboard watch.json -o watch.mp4         # the real thing (+ watch_short.mp4)
 
-# Flat infographic style, vertical for Shorts / Reels / TikTok
-story_animator generate "The history of coffee" --style infographic --aspect portrait \
-    --theme sunset --audience "curious teenagers" -o coffee.mp4
-
-# Review the script before spending TTS credits
-story_animator storyboard "How vaccines work" -o vaccines.json
-#   ...edit vaccines.json...
-story_animator generate --storyboard vaccines.json
+# Or straight from a topic
+story_animator generate "How Panama Canal locks lift ships" -o canal.mp4
 
 # Tweak a finished run: edit storage/runs/<id>/storyboard.json, then
 story_animator resume <id>
 ```
 
-(`story_animator` here means `target/release/story_animator`, or `cargo run --release --`.)
+(`story_animator` here means `target/release/story_animator`.)
 
-Each run lives in `storage/runs/<run_id>/` along with its storyboard,
-narration, timeline, scene clips and `final.mp4`.
+Each run lives in `storage/runs/<run_id>/` with its storyboard, narration,
+timeline, scene clips, `master.mp4`, `final.mp4`, `short.mp4` and `youtube.txt`.
 
 ### 5. Or run it as a service
 
 ```bash
 story_animator serve           # http://localhost:3000
 curl -X POST localhost:3000/api/videos -H 'content-type: application/json' \
-     -d '{"topic": "Why is the sky blue?", "aspect": "portrait"}'
-curl localhost:3000/api/videos/<id>              # progress
-curl -o sky.mp4 localhost:3000/api/videos/<id>/video
+     -d '{"topic": "How wind turbines turn wind into power"}'
+curl localhost:3000/api/videos/<id>                        # progress
+curl -o turbine.mp4       localhost:3000/api/videos/<id>/video
+curl -o turbine_short.mp4 localhost:3000/api/videos/<id>/short
 ```
 
 See [docs/API.md](docs/API.md).
@@ -127,8 +142,8 @@ See [docs/API.md](docs/API.md).
 
 | Doc | What's in it |
 |---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Pipeline stages, timing model, how exact 60s is guaranteed, project layout |
-| [docs/STORYBOARD.md](docs/STORYBOARD.md) | Write your own storyboards: every layout, field and option |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Pipeline stages, chaptered writing, timing model, the short, credit savings, project layout |
+| [docs/STORYBOARD.md](docs/STORYBOARD.md) | Write your own storyboards: every layout, field and option, silent scenes, audio tags |
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every `.env` setting |
 | [docs/API.md](docs/API.md) | HTTP endpoints |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common problems and fixes |
@@ -136,9 +151,10 @@ See [docs/API.md](docs/API.md).
 ## Project layout
 
 ```
-src/                 Rust orchestrator (CLI, API, pipeline)
+src/                 Rust orchestrator (CLI, API, pipeline, niche, writer)
 engine/story_engine/ Python render engine (Manim): layouts, icons, characters, backgrounds
 assets/fonts/        Poppins + Libre Baskerville (SIL Open Font License)
+assets/music/        Background-music library (generated; git-ignored)
 examples/            Ready-to-render storyboards
 docs/                Documentation
 storage/runs/        One folder per generated video (git-ignored)
@@ -146,9 +162,13 @@ storage/runs/        One folder per generated video (git-ignored)
 
 ## Costs
 
-A 60-second video uses about 1–3 LLM calls and about 900 characters of
-ElevenLabs TTS. `--silent` and hand-written storyboards cost nothing.
-`BACKGROUND_MUSIC=elevenlabs` adds one music generation per video.
+A five-minute video uses about 8–15 LLM calls (outline, chapters, repairs,
+custom scenes) and about 3,000–3,500 characters of ElevenLabs TTS: roughly
+550–600 spoken words, since chapter cards and visual beats are silent. The
+short reuses the same narration, so it costs nothing extra. `--silent` and
+re-runs of unchanged scenes cost nothing. Music is generated once for the
+library (`story_animator music`); ElevenLabs bills music separately from TTS
+characters.
 
 ## License
 

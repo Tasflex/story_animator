@@ -102,12 +102,12 @@ pub struct ShortStyle<'a> {
 pub fn build_short(tl: &Timeline, scenes: std::ops::Range<usize>, start: f64, end: f64, st: &ShortStyle<'_>) -> String {
     let hl = ass_color(st.highlight);
     let mut s = header(1080, 1920, &[
-        format!("Style: Title,{},70,&H00FFFFFF,&H00FFFFFF,&H00101010,&H00000000,-1,0,0,0,100,100,0,0,1,4,0,8,70,70,250,1", st.font),
+        format!("Style: Title,{},88,&H00FFFFFF,&H00FFFFFF,&H00101010,&H00000000,-1,0,0,0,100,100,0,0,1,5,0,8,70,70,270,1", st.font),
         format!(
             "Style: Caption,{},74,&H00FFFFFF,&H00FFFFFF,&H00101010,&H90000000,-1,0,0,0,100,100,0,0,1,5,1.5,8,60,60,{},1",
             st.font, st.captions_y
         ),
-        format!("Style: Cta,{},44,&H00FFFFFF,&H00FFFFFF,&H00101010,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,2,70,70,230,1", st.font),
+        format!("Style: Cta,{},54,&H00FFFFFF,&H00FFFFFF,&H00101010,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,2,70,70,230,1", st.font),
     ]);
     let dur = end - start;
     if !st.title.is_empty() {
