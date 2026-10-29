@@ -118,8 +118,9 @@ def build_part(env: KitEnv, spec: dict) -> Part:
 def catalog_docs() -> dict:
     docs = dict(DOCS)
     for name, (_build, meta) in library().items():
-        docs[name] = str(meta.get("use") or name) + (
-            f"; actions {', '.join(meta['actions'])}" if meta.get("actions") else "")
+        use = str(meta.get("use") or name)
+        acts = meta.get("actions") or []
+        docs[name] = use + (f"; actions {', '.join(acts)}" if acts and "action" not in use.lower() else "")
     return docs
 
 

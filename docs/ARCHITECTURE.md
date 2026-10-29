@@ -21,13 +21,19 @@ vocabulary of layouts, icons and motions. All the craft (composition,
 easing, typography, timing) lives in tested code that always renders.
 
 The old version had one real strength: a bespoke diagram for each idea.
-That survives in a contained form. A storyboard may mark up to two scenes
-as `custom` (extra ones become their fallback layouts), and for those the LLM writes
-code for that **one scene**, against the same small `ctx` API the built-in
-layouts use. The code is statically sandbox-checked, dry-run, and retried
-with the error message. If it still fails, the scene's declared `fallback`
-layout renders instead. The blast radius of a mistake is one scene, not the
-whole video.
+That survives in two contained forms:
+
+- **The mechanism kit** (the main one): `process` scenes are data (which
+  parts, how they connect, what happens on which word), drawn from a kit of
+  schematic parts. When a video needs a part the kit lacks, the LLM writes
+  *that part*, it is validated, and it is kept for every later video.
+- **`custom` scenes** (rare, max 2 per video): the LLM writes code for one
+  scene against the same small `ctx` API the built-in layouts use.
+
+Both are statically sandbox-checked, dry-run, and retried with the error
+message, and both have a safe fallback (a labelled block, or the scene's
+declared `fallback` layout). The blast radius of a mistake is one part or
+one scene, never the whole video.
 
 ## Pipeline
 
@@ -58,6 +64,11 @@ whole video.
                 │ 4 captions   │  subtitles.rs: ASS, word-by-word highlight
                 │   + music    │  a track from the music library, mixed low
                 └──────┬───────┘
+                       ▼
+                ┌──────────────┐
+                │ 4a kit       │  kit.rs: parts the storyboard needs but the kit lacks → LLM writes
+                │    growth    │  PART + build(k, spec) → `story_engine validate-part` → retry →
+                └──────┬───────┘  saved to engine/story_engine/kit/library/ for reuse
                        ▼
                 ┌──────────────┐
                 │ 4b custom    │  custom.rs: LLM writes build(ctx) per custom scene →
@@ -103,6 +114,69 @@ The channel brief lives in `src/niche.rs`: what fits (mechanisms,
 megastructures, systems, nature's engineering, everyday physics) and what
 is refused (news, politics, celebrities, opinion, advice, footage-dependent
 topics). `story_animator topics` asks for ideas against the same brief.
+
+## The mechanism kit: showing how things work
+
+Icon cards are reliable but viewers can't follow a mechanism through them,
+so most scenes are working schematics and icon-led layouts (hero,
+icon_row, list, compare, flow, cycle, character) are capped at 20% of
+narrated scenes by validation. Every middle chapter must contain a
+`process` or `cross_section` scene.
+
+**Parts** (`engine/story_engine/kit/`). A part is drawn from strokes in the
+theme colours (an engineering drawing brought to life, not clip-art) and
+knows:
+
+- its **ports** (`in`, `out`, `top`, `bottom`…) as fractions of its bounding
+  box, so connections stay right after the layout scales and moves it;
+- its **actions** (`on`, `off`, `open`, `close`, `level`, `highlight`…). Each
+  returns animations, or with `instant=True` jumps to the end state.
+  Motion runs off a `speed` ValueTracker so it eases on and off.
+
+Built-ins: tank (liquid level, things can float on it), valve, pump,
+turbine, propeller, gear (meshes by tooth ratio), piston, wheel, spring,
+motor, generator, battery, bulb, switch, heater, chip, laser, detector,
+mirror, lens, antenna, flame, ship (floats on a tank's water), block,
+node, plus aliases (`chamber`→tank, `sluice`→valve…).
+
+**Links** join ports with orthogonal elbow routes and look like what they
+are: a hollow pipe, a wire, a cable, a glowing ray, a glass fibre (light
+zig-zags inside), a belt, a shaft or an arrow. Particles flow along them,
+coloured by what they carry (water, current, data, light, air, heat…), at
+a speed that eases on and off.
+
+**The `process` layout** places parts on a `col`/`row` grid, grows the
+whole machine to fill the stage, places labels (resized and moved to avoid
+collisions), routes the links, builds the diagram in, then plays the
+storyboard's steps on their cue words. `focus` moves the camera in on a
+part (moderate zoom, clamped to the frame); `note` pops a short callout.
+A scene with no steps (a silent beat) just runs the machine.
+
+**Continuing diagrams.** Consecutive `process` scenes where the later one
+sets `"continue": true` form a chain. The orchestrator gives every scene in
+the chain all the chain's contents and its position (`kit::chains`). The
+engine lays out the union of all parts, so positions never jump between
+scenes, adds the parts introduced earlier straight away, replays earlier
+steps instantly, and animates only this scene's new parts and steps. A
+chapter builds one machine across 2–4 scenes, and each cut is seamless.
+
+**Growing the kit** (`src/kit.rs`). After the storyboard is written,
+`new_part_requests` finds part kinds that neither the catalog nor its
+aliases know, each with the storyboard's `make` description and the
+actions its steps use. For up to 3 per video, the LLM writes a part file
+(`PART` metadata + `build(k, spec)`) against `PART_API`. The engine's
+`validate-part` sandbox-checks it, builds it in a dry-run `process` scene,
+scales it and fires every action. Errors go back to the LLM for up to
+`CUSTOM_ATTEMPTS` tries. A passing part is saved to
+`engine/story_engine/kit/library/<kind>.py` with a header naming the video
+it was made for. The catalog picks it up next time, so the writer sees it
+as an ordinary part. Parts that fail render as labelled blocks. Commit new
+library files so the kit persists.
+
+**`cross_section`** draws concentric rings (inside out: cable, pipe,
+planet) or a stack (top down: road, dam, chip; built foundations first),
+each layer with a material fill and texture (steel hatching, armour wires,
+gel dots, glass shine…) and a leader-line label.
 
 ## Saving TTS credits
 
@@ -209,7 +283,10 @@ play X for r seconds") through `Ctx.at()`. Beat times come from
 
 1. each element's `cue` word is looked up in the narration (exact, then prefix match);
 2. elements without a found cue are interpolated between found ones;
-3. times are made monotonic, with minimum gaps, and kept inside the slot;
+3. times are made monotonic, with minimum gaps, and kept inside the slot.
+   Cue words are searched from the start of the narration even when the
+   sequence starts later (after an intro build), so a word said early is
+   never matched to a repeat of it at the end;
 4. the first element never waits more than 0.9s after the narration starts
    (`Ctx.first_by`), so a cue word late in the sentence can't leave an empty frame.
 
@@ -224,10 +301,11 @@ The clip is always padded or clamped to the exact spec duration.
 
 ```
 src/
-  main.rs        CLI (generate, storyboard, topics, music, resume, serve, doctor, catalog)
+  main.rs        CLI (generate, storyboard, topics, kit, music, resume, serve, doctor, catalog)
   config.rs      .env → Config (all knobs, defaults, validation)
   catalog.rs     loads the engine's vocabulary (single source of truth)
   niche.rs       the channel brief + topic ideas
+  kit.rs         grows the mechanism kit (new parts: write, validate, save); process chains
   storyboard.rs  storyboard model, chapters, silent scenes, budgets, validation (unit-tested)
   llm.rs         single-call writer, outline + parallel chapter writer, Gemini/DeepSeek, repair loops
   tts.rs         ElevenLabs TTS with timestamps + audio tags, voices, music, silent mode
@@ -242,7 +320,7 @@ src/
   doctor.rs      environment checks
 
 engine/story_engine/
-  __main__.py    CLI: render | catalog | check | validate
+  __main__.py    CLI: render | catalog | check | validate | validate-part
   fonts.py       fontconfig setup (bundled fonts; must run before manim import)
   theme.py       11 curated themes (each with font + style: diagram/infographic)
   stage.py       frame geometry (landscape/portrait), text + shape helpers
@@ -250,6 +328,9 @@ engine/story_engine/
   layouts.py     12 general layouts + LAYOUT_DOCS (what the LLM may write)
   diagrams.py    equation, graph, vectors, dot_grid, network (3Blue1Brown style)
   marvels.py     chapter, fun_fact, scale (long-form format)
+  process.py     process (working schematics, chains, focus) and cross_section
+  kit/           mechanism kit: core.py (Part, Link, particles, routing), parts.py (built-ins),
+                 __init__.py (registry, library loader, PART_API), library/ (generated parts)
   custom.py      sandbox checker, loader and API reference for custom scenes
   icons.py       86 procedural icons (incl. an engineering set) + ~330 synonyms
   characters.py  rigged characters: poses, expressions, blink, lip-flap

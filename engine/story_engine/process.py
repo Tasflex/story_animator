@@ -226,6 +226,11 @@ def layout_process(ctx: Ctx):
                 minor = str(spec.get("kind", "")).lower() in ("valve", "node", "switch", "gate", "tap", "junction")
                 if minor and (_hits(lab, placed) or _hits(lab, others)):
                     continue  # a valve reads without its label; a collision doesn't
+        edge = st.width / 2 - 0.2  # labels of the outermost parts stay inside the frame
+        if lab.get_left()[0] < -edge:
+            lab.shift(RIGHT * (-edge - lab.get_left()[0]))
+        if lab.get_right()[0] > edge:
+            lab.shift(LEFT * (lab.get_right()[0] - edge))
         if pid in floating:
             lab.add_updater(lambda m, mob=part.mob: m.next_to(mob, UP, buff=0.1))
         part.label = lab
@@ -294,11 +299,40 @@ def layout_process(ctx: Ctx):
                 for verb, target, val in [x for a in _as_list(step.get("do")) for x in _parse_action(a)]:
                     _apply(ctx, verb, target, val, parts, labels, links, links_spec, state, instant=True)
 
+    # ---- layering: links under parts, labels and notes on top
+    for lid, link in links.items():
+        link.body.set_z_index(1)
+        link.particles.set_z_index(2)
+    for p in parts.values():
+        p.mob.set_z_index(3)
+    for lab in labels.values():
+        lab.set_z_index(5)
+
     # ---- intro: parts new in this scene build in, links draw between them
     new_parts = sorted([pid for pid, j in part_intro.items() if j == k and pid not in hidden],
                        key=lambda p: p in floating)  # hosts before what floats on them
     new_links = [lid for lid, j in link_intro.items() if j == k or (
         j < k and lid in links and not any(m is links[lid].body for m in ctx.scene.mobjects))]
+
+    # ---- camera: frame what is on screen. A diagram that grows across a chain
+    # starts on the parts already there and pulls back as new ones arrive.
+    frame = ctx.scene.camera.frame
+    prior_ids = [p for p in shown_parts]
+    end_ids = list(dict.fromkeys(prior_ids + new_parts))
+    c_end, w_end = _view_for(ctx, _group_of(parts, end_ids), min_scale=0.5)
+    c_start, w_start = _view_for(ctx, _group_of(parts, prior_ids), min_scale=0.5) if prior_ids else (c_end, w_end)
+    steps_have_focus = any(v == "focus" for s in _as_list(ctx.content.get("steps")) if isinstance(s, dict)
+                           for a in _as_list(s.get("do")) for v, _, _ in _parse_action(a))
+    camera_moves = min(w_start, w_end) < ctx.stage.width * 0.98 or steps_have_focus
+    if camera_moves:
+        frame.clear_updaters()
+        frame.move_to(c_start).set_width(w_start)
+        if ctx.title_mob is not None:
+            for m in ctx.title_mob:
+                m.set_z_index(7)
+                ctx.pin_to_frame(m)
+        if abs(w_end - w_start) > 0.05 or np.linalg.norm(c_end - c_start) > 0.05:
+            ctx.at(0.3, lambda: [frame.animate(rate_func=EASE).move_to(c_end).set_width(w_end)], 1.6)
     t_intro = 0.2
     if new_parts:
         span = min(1.6, 0.25 * len(new_parts) + 0.5)
@@ -344,8 +378,8 @@ def layout_process(ctx: Ctx):
             return anims or [Indicate(VGroup(*[p.mob for p in parts.values()]), scale_factor=1.0)]
         ctx.at(t, make, rt)
     if focus_used:
-        ctx.scene.camera.frame.clear_updaters()
-        ctx.at(max(times[-1] + 1.6, ctx.content_end - 1.6), lambda: _focus(ctx, None, parts), 1.0)
+        ctx.at(max(times[-1] + 1.6, ctx.content_end - 1.6),
+               lambda: _focus(ctx, None, parts, sorted(state["shown_parts"])), 1.0)
 
 
 def _link_body(ctx: Ctx, path, kind: str, pts) -> VGroup:
@@ -386,41 +420,63 @@ def _hits(m, others, margin: float = 0.06) -> bool:
     return False
 
 
-def _focus(ctx: Ctx, target, parts):
+def _view_for(ctx: Ctx, mobs, min_scale: float = 0.62, pad: float = 1.12):
+    """Camera (centre, width) that fits `mobs` into the content area of the
+    view, so the pinned heading and the caption band stay clear."""
+    st = ctx.stage
+    mobs = [m for m in mobs if m is not None]
+    if not mobs:
+        return np.array([0.0, 0.0, 0.0]), st.width
+    grp = VGroup(*mobs)
+    box_h = st.content_h - NOTE_BAND  # the note strip under the heading stays clear
+    box_c = st.content_center + DOWN * NOTE_BAND / 2
+    s = max(grp.width * pad / st.content_w, grp.height * pad / box_h)
+    s = min(max(s, min_scale), 1.0)
+    w, h = st.width * s, st.height * s
+    c = grp.get_center() - box_c * s
+    cx = float(np.clip(c[0], -(st.width - w) / 2, (st.width - w) / 2))
+    cy = float(np.clip(c[1], -(st.height - h) / 2, (st.height - h) / 2))
+    return np.array([cx, cy, 0.0]), w
+
+
+def _group_of(parts, ids):
+    return [m for i in ids if i in parts for m in (parts[i].mob, parts[i].label)]
+
+
+def _focus(ctx: Ctx, target, parts, visible=None):
     frame = ctx.scene.camera.frame
-    full_w, full_h = ctx.stage.width, ctx.stage.height
+    head = ctx.title_mob
     if target is None or str(target).lower() in ("all", "none", "reset", "out"):
-        return [frame.animate(rate_func=EASE).move_to([0, 0, 0]).set_width(full_w)]
+        c, w = _view_for(ctx, _group_of(parts, visible if visible else list(parts)), min_scale=0.5)
+        back = [head.animate.set_opacity(1)] if head is not None else []
+        return [frame.animate(rate_func=EASE).move_to(c).set_width(w), *back]
     ids = [t for t in re.split(r"[,\s]+", str(target)) if t in parts]
     if not ids:
         return []
-    grp = VGroup(*[m for i in ids for m in (parts[i].mob, parts[i].label) if m is not None])
-    # Moderate zoom: the part plus its neighbours stay readable, labels never cropped.
-    w = min(max(grp.width * 1.9, grp.height * 1.9 * full_w / full_h, full_w * 0.62), full_w)
-    h = w * full_h / full_w
-    c = grp.get_center()
-    cx = float(np.clip(c[0], -(full_w - w) / 2, (full_w - w) / 2))
-    cy = float(np.clip(c[1], -(full_h - h) / 2, (full_h - h) / 2))
-    return [frame.animate(rate_func=EASE).move_to([cx, cy, 0]).set_width(w)]
+    # Moderate zoom: the part plus some context, labels readable. Neighbouring
+    # parts slide up under the heading in a close-up, so the heading steps aside.
+    c, w = _view_for(ctx, _group_of(parts, ids), min_scale=0.62, pad=1.9)
+    away = [head.animate.set_opacity(0)] if head is not None else []
+    return [frame.animate(rate_func=EASE).move_to(c).set_width(w), *away]
 
 
 def _apply(ctx, verb, target, val, parts, labels, links, links_spec, state, instant):
     """One step action -> animations (or instant state change)."""
     th = ctx.theme
     if verb == "focus":
-        return [] if instant else _focus(ctx, target, parts)
+        return [] if instant else _focus(ctx, target, parts, sorted(state["shown_parts"]))
     if verb == "note":
         text = str(val if val is not None else target or "")[:40]
         if not text:
             return []
-        pill = _note(ctx, text, parts)
+        pill = _note(ctx, text)
         old, state["note"] = state["note"], pill
         if instant:
             if old is not None:
                 ctx.scene.remove(old)
             ctx.add(pill)
             return []
-        return [*( [FadeOut(old)] if old is not None else []), FadeIn(pill, shift=DOWN * 0.15)]
+        return [*( [FadeOut(old)] if old is not None else []), FadeIn(pill, scale=0.8)]
     ids = [t for t in re.split(r"[,\s]+", str(target or "")) if t] or (["*"] if verb in ("on", "off") else [])
     if ids == ["*"]:
         ids = list(parts) + list(links)
@@ -488,15 +544,20 @@ def _apply(ctx, verb, target, val, parts, labels, links, links_spec, state, inst
     return anims
 
 
-def _note(ctx: Ctx, text: str, parts):
+NOTE_BAND = 0.62  # strip kept free under the heading for step notes
+
+
+def _note(ctx: Ctx, text: str):
+    """A callout pill in the strip under the heading, pinned to the camera."""
     th = ctx.theme
     t = ctx.text(text, size=26, weight="BOLD", color=th.bg if th.dark else "#FFFFFF")
     box = RoundedRectangle(corner_radius=0.22, width=t.width + 0.5, height=t.height + 0.3, stroke_width=0,
                            fill_color=th.accent, fill_opacity=0.95)
     pill = VGroup(box, t.move_to(box))
-    allp = VGroup(*[p.mob for p in parts.values()])
-    top_lim = (ctx.stage.content_top if ctx.s.get("title") else ctx.stage.height / 2 - 0.5) - pill.height / 2
-    pill.move_to([allp.get_center()[0], min(allp.get_top()[1] + 0.45, top_lim), 0])
+    top = ctx.stage.content_top if ctx.s.get("title") else ctx.stage.height / 2 - 0.5
+    pill.move_to([0, top - NOTE_BAND / 2 + 0.05, 0])
+    pill.set_z_index(6)
+    ctx.pin_to_frame(pill)
     return pill
 
 

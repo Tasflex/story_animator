@@ -135,7 +135,84 @@ in the narration, items are spread evenly through the narration. The first
 item always appears within about a second of the narration starting, even
 if its cue word comes later, so no scene opens on an empty frame.
 
-## Layouts
+## Mechanism layouts (the main tool)
+
+Viewers follow a mechanism by watching it work, so most scenes should be
+`process` or `cross_section`. Icon-led layouts (`hero`, `icon_row`, `list`,
+`compare`, `flow`, `cycle`, `character`) may be at most 20% of narrated
+scenes, and every middle chapter needs a mechanism scene. Generated
+storyboards are validated against this.
+
+### `process`: a working schematic, run step by step
+```json
+{ "parts": [ { "id": "lake",  "kind": "tank",  "label": "Upper lake",   "width": 1.3, "level": 0.9,  "col": 0 },
+             { "id": "valve", "kind": "valve", "label": "Inlet valve",  "col": 1, "row": 0.6 },
+             { "id": "lock",  "kind": "tank",  "label": "Lock chamber", "width": 1.6, "level": 0.15, "col": 2 },
+             { "id": "ship",  "kind": "ship",  "label": "Ship", "floats_on": "lock" } ],
+  "links": [ { "id": "culvert",  "from": "lake",  "to": "valve", "kind": "pipe", "carries": "water" },
+             { "id": "culvert2", "from": "valve", "to": "lock",  "kind": "pipe", "carries": "water" } ],
+  "steps": [ { "cue": "valve",   "do": [ { "open": "valve" }, { "focus": "valve" } ] },
+             { "cue": "gravity", "do": [ { "on": "culvert culvert2" }, { "focus": "all" }, { "note": "No pumps" } ] },
+             { "cue": "rises",   "do": [ { "level": ["lock", 0.85] }, { "level": ["lake", 0.8] } ] } ] }
+```
+- **parts**: `id`, `kind` (a kit part; `story_animator kit` lists them),
+  `label` (≤ 3 words), `col`/`row` (small grid positions in the order things
+  happen; fractions are fine), optional `size` (0.4–2.2), `hidden: true`
+  (appears later via `show`), plus part fields such as `level`, `width`,
+  `open`, `teeth`, `blades`, `angle`, `floats_on`.
+- **links**: `from`/`to` (a part id, optionally `id.port` with
+  in/out/top/bottom/left/right), `kind` (`pipe`, `wire`, `cable`, `ray`,
+  `fibre`, `belt`, `shaft`, `arrow`, `duct`, or `mesh` for two gears),
+  `carries` (`water`, `oil`, `air`, `gas`, `steam`, `heat`, `current`,
+  `data`, `light`, `signal`, `force`, `fuel`, `blood`), optional `id`,
+  `label`, `flow: true` (running from the start), `reverse`.
+- **steps**: each has a `cue` word and a `do` list. Actions:
+  `on`/`off` (parts run or spin; links flow), `open`/`close`,
+  `level [id, 0-1]`, `fill`, `drain`, `show`, `hide`, `highlight`, `dim`,
+  `undim`, `label [id, "text"]`, `focus id` / `focus all` (camera),
+  `note "text"`, `reverse` (a link), and part-specific ones (`forward` for
+  a ship). Targets can be several ids separated by spaces. Strings like
+  `"open valve"` work too.
+- **`"continue": true`** on the next process scene keeps the same diagram:
+  reuse the ids, add parts or links if needed, and give only the new steps.
+  The diagram picks up exactly where the previous scene left it. Use this
+  to grow one machine over 2–4 scenes per chapter. Consecutive process
+  scenes are only allowed with `continue`.
+- A silent `process` scene (no narration, a `hold`) with no steps just runs
+  the machine: a good visual beat after a reveal.
+
+**Parts the kit doesn't have.** Use a new generic snake_case `kind` and add
+`"make"`: one line describing how to draw it, for example
+`{"id": "gate", "kind": "miter_gate", "make": "pair of lock gates that swing shut into a V against the water", "col": 3}`.
+The part is written by the AI, sandbox-checked and test-run, then saved to
+`engine/story_engine/kit/library/` and reused by every later video. If it
+can't be validated, it draws as a labelled block. Name it generically
+(`miter_gate`, not `panama_gate_2`) and prefer existing parts. At most 3 new
+parts are built per video.
+
+Built-in parts: tank, valve, pump, turbine, propeller, gear, piston, wheel,
+spring, motor, generator, battery, bulb, switch, heater, chip, laser,
+detector, mirror, lens, antenna, flame, ship, block (abstract units only),
+node. Aliases include chamber/reservoir→tank, sluice/gate→valve,
+fan/compressor→turbine, lamp→bulb, emitter→laser, receiver/sensor→detector,
+boat/vessel→ship.
+
+### `cross_section`: cut it open, layer by layer
+```json
+{ "shape": "rings",
+  "layers": [ { "label": "Glass fibres", "material": "core", "thickness": 0.6, "cue": "fibres" },
+              { "label": "Copper sleeve", "material": "copper", "thickness": 0.5, "note": "carries power", "cue": "copper" },
+              { "label": "Steel armour", "material": "steel_wires", "thickness": 0.7, "cue": "armour" } ],
+  "highlight": 1, "highlight_cue": "power" }
+```
+`rings` lists layers inside out (cable, pipe, planet); `stack` lists them top
+down (road, dam, chip) and builds foundations first. Materials: glass, core,
+fibre, steel, steel_wires, copper, aluminium, gold, plastic, polyethylene,
+rubber, insulation, gel, water, air, soil, sand, gravel, concrete, asphalt,
+rock, clay, silicon, oxide, iron, wood, foam, tar. Each has its own fill and
+texture.
+
+## Other layouts
 
 ### `title`: opening hook or closing card
 ```json
@@ -389,9 +466,10 @@ An unknown name renders as a lettered badge, so it never breaks.
 ## Tips for great videos
 
 - **Hook in scene 1.** Start with a question, a surprising number or a size comparison (`stat`, `scale` and `hero` work well).
+- **Show the machine working.** One `process` diagram per chapter, grown with `continue`; tie every step to a cue word.
 - **One wow per chapter.** Relate it to something familiar ("thinner than a hair", "taller than the Eiffel Tower").
 - **Make the short's chapter standalone.** Its first line must hook without earlier context.
-- **Never repeat a layout back to back.** Use 5 or more different layouts.
+- **Never repeat a layout back to back**, except `process` scenes that `continue` the same diagram.
 - **Name what you show.** If a card says "Water", say "water" in the narration and cue it.
 - **Short on-screen text.** Labels of 3 words or fewer. Captions carry the sentences.
 - **End on a closer.** A `quote` or `title` card gives the final 2–3 seconds a composed frame.

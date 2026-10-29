@@ -41,7 +41,7 @@ Only narrated scenes are sent to ElevenLabs; chapter cards and visual beats are 
 |---|---|---|
 | `VISUAL_STYLE` | `diagram` | `diagram`: 3Blue1Brown-like (serif, LaTeX, graphs, vectors, dot grids, networks, `blueprint`/`graphite` themes). `infographic`: flat icons, cards and characters. Override per video with `--style`. |
 | `CUSTOM_SCENES` | `1` | Allow the AI to write one-off `custom` diagram scenes (validated, with fallbacks). `0` uses each scene's fallback layout instead. |
-| `CUSTOM_ATTEMPTS` | `3` | Write → validate → fix rounds per custom scene before using its fallback (1–6) |
+| `CUSTOM_ATTEMPTS` | `3` | Write → validate → fix rounds per custom scene, and per new kit part, before falling back (1–6) |
 
 ## Video
 

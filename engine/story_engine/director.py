@@ -75,6 +75,7 @@ class Ctx:
     words: list[dict]
     rng: random.Random
     beats: list[Beat] = field(default_factory=list)
+    title_mob: object = None  # the scene heading, so layouts that move the camera can pin it
 
     # --- scene data -------------------------------------------------------
     @property
@@ -229,6 +230,25 @@ class Ctx:
     def accent(self, i: int) -> str:
         return self.theme.accents[i % 3]
 
+    def pin_to_frame(self, m):
+        """Keep `m` fixed on screen while the camera moves or zooms (headings, notes).
+        `m` must be laid out for the full, unzoomed frame; it is moved to the
+        camera's current view straight away and follows it from then on."""
+        frame = self.scene.camera.frame
+        w0 = self.stage.width
+        off = m.get_center().copy()
+        state = {"s": 1.0}
+
+        def upd(mob):
+            s = frame.width / w0
+            if abs(s - state["s"]) > 1e-6:
+                mob.scale(s / state["s"])
+                state["s"] = s
+            mob.move_to(frame.get_center() + off * s)
+        upd(m)
+        m.add_updater(upd)
+        return m
+
 
 class SpecScene(MovingCameraScene):
     def __init__(self, spec: dict, **kwargs):
@@ -330,6 +350,7 @@ class SpecScene(MovingCameraScene):
                 t.shift(DOWN * (t.height - 0.8) / 2)
             rule = Line(t.get_corner(DOWN + LEFT), t.get_corner(DOWN + RIGHT), stroke_color=ctx.theme.accent,
                         stroke_width=2.5).shift(DOWN * 0.14)
+            ctx.title_mob = VGroup(t, rule)
             ctx.at(0.15, lambda: [FadeIn(t, shift=DOWN * 0.15), Create(rule)], 0.8)
             return
         t = ctx.text(title, size=50 if not st.portrait else 46, weight="BOLD",
@@ -339,6 +360,7 @@ class SpecScene(MovingCameraScene):
             t.shift(DOWN * (t.height - 0.8) / 2)
         bar = Rectangle(width=0.9, height=0.07, stroke_width=0, fill_color=ctx.theme.accent, fill_opacity=1)
         bar.next_to(t, DOWN, buff=0.18)
+        ctx.title_mob = VGroup(t, bar)
         ctx.at(0.15, lambda: [FadeIn(t, shift=DOWN * 0.25), GrowFromCenter(bar)], 0.7)
 
     # --- scheduler --------------------------------------------------------

@@ -88,6 +88,30 @@ shows each attempt's error (`custom scene failed validation`). Options:
   ../venv/bin/python -m story_engine validate --spec ../storage/runs/<id>/scenes/scene_XX.validate.json
   ```
 
+**A part in a process diagram is just a labelled box**
+The kit didn't have that kind and the AI's part didn't pass validation (the
+log shows `kit part failed validation`), or the storyboard gave no `make`
+line. Options: add or improve the `make` description and `resume`; use an
+existing part (`story_animator kit`); or write the part yourself in
+`engine/story_engine/kit/library/<kind>.py` (see `PART_API` in
+`engine/story_engine/kit/__init__.py`) and check it:
+```bash
+cd engine
+../venv/bin/python -m story_engine validate-part --file story_engine/kit/library/<kind>.py
+```
+
+**A generated kit part looks wrong**
+Library parts are ordinary files. Edit
+`engine/story_engine/kit/library/<kind>.py`, run `validate-part`, and
+commit it; every later video uses the fix. Delete the file to have it
+regenerated the next time a storyboard needs it. To re-render existing runs
+with the change, delete their `scenes/*.mp4` and `resume`.
+
+**Process labels overlap or the camera crops something**
+Labels shrink, move above, or (for valves and junctions) drop when they
+would collide. Crowding usually means too many parts in one row: spread
+them with `row` values or split the system across two `continue` scenes.
+
 **A scene looks plain (just a title card)**
 That scene's layout failed and the safe fallback was used. Check
 `storage/runs/<id>/scenes/scene_XX.fallback.json` and run the original spec

@@ -37,9 +37,11 @@ records and true-scale comparisons.
 | **Expressive narration** | ElevenLabs `eleven_v4` with audio tags (`[curious]`, `[amazed]`, `[serious]`…) chosen per scene by the writer. Tags never show in captions. |
 | **Fewer TTS credits** | Silent scenes (chapter cards, visual beats where the animation speaks for itself) are never sent to ElevenLabs. Narration is cached per scene, so edits and re-runs only pay for what changed. `--silent` previews cost nothing. |
 | **One render, two formats** | A clean master is rendered once. Captions are burned onto it for YouTube, and the short is cut from it: the landscape frame sits full-width in a 9:16 canvas over a blurred fill, with the title above and captions below. No second render. |
+| **See how it works** | Most scenes are **working schematics**, not icon cards: the `process` layout builds the system from kit parts (tanks, valves, pumps, gears, pistons, lasers, ships…) joined by pipes, wires, rays or fibres, then runs it on the narrator's words. Valves open, water flows, levels rise, a ship floats up, rotors spin, the camera moves in on the part being explained. One diagram grows across a chapter (`continue`). `cross_section` cuts things open layer by layer. Icon-based layouts are capped at 20% of scenes. |
+| **A kit that grows** | When a video needs a part the kit doesn't have (a canal mule locomotive, a heat exchanger…), the AI draws it, it is sandbox-checked and test-run, and it is **saved to the kit library** for every later video. `story_animator kit` lists the parts. |
 | **Orchestrated visuals** | Each element appears as the narrator says its name, driven by word timestamps, and every scene shows something within about a second. |
-| **21 animated layouts + custom scenes** | Long-form: chapter, fun_fact, scale. Diagram: equation, graph, vectors, dot_grid, network. General: title, hero, icon_row, list, compare, stat, bar_chart, flow, timeline, character, quote, cycle. Plus **custom**: the AI writes a one-off animation for one scene, which is safety-checked and test-run, with a fallback layout if it fails. |
-| **86 vector icons** | Including an engineering set (bridge, tower, dam, wind turbine, crane, ship, train, jet engine, satellite, pylon…), drawn procedurally in theme colours. 11 themes, 12 animated backgrounds, 6 camera moves, 14 transitions. |
+| **23 animated layouts + custom scenes** | Mechanism: process, cross_section. Long-form: chapter, fun_fact, scale. Diagram: equation, graph, vectors, dot_grid, network. General: title, hero, icon_row, list, compare, stat, bar_chart, flow, timeline, character, quote, cycle. Plus **custom** (max 2 per video): the AI writes a one-off animation, safety-checked, with a fallback. |
+| **25+ kit parts, 86 icons** | Schematic parts with ports, actions and flowing particles; flat icons (including an engineering set) for the occasional card. 11 themes, 12 animated backgrounds, 6 camera moves, 14 transitions. |
 | **Background music** | A small library of tracks generated once with ElevenLabs Music (`story_animator music`), reused across videos, mixed low and ducked under the voice. |
 | **Robust rendering** | Scenes render in parallel as independent processes. A failing scene falls back to a safe layout instead of killing the video. |
 | **CLI + HTTP API** | Use it from the terminal or as a job-queue service. |
@@ -52,16 +54,19 @@ records and true-scale comparisons.
             timeline fit (= 300.000s) ◄────────────────────────────────────────────┘
                     │
                     ▼
-     Manim scenes (parallel) ─► master.mp4 ─┬─► + captions ─────────────────► final.mp4   (16:9, 5:00)
+     new kit parts (built once, kept) ─► Manim scenes (parallel)
+                    │
+                    ▼
+               master.mp4 ──────────────────┬─► + captions ─────────────────► final.mp4   (16:9, 5:00)
                                              └─► segment ─► 9:16 reframe ────► short.mp4   (≤ 59s)
 ```
 
-The LLM mostly writes **data**: a structured storyboard using the vocabulary
-the engine supports, which a deterministic Python/Manim engine turns into
-animation. For the odd scene that needs a bespoke diagram (a repeater's
-insides, a cable's cross-section), it writes code for **that one scene**,
-which is sandbox-checked, dry-run, retried with the error, and replaced by
-a safe layout if it still fails. Read more in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+The LLM mostly writes **data**: a structured storyboard (which parts, how
+they connect, what happens on which word) that a deterministic Python/Manim
+engine turns into animation. Code is written only for a new kit part (kept
+and reused) or a rare one-off `custom` scene, and both are sandbox-checked,
+dry-run and retried with the error, with a safe fallback if they still fail.
+Read more in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Quick start
 
@@ -93,7 +98,7 @@ target/release/story_animator music      # once: generates 3 background tracks i
 ```
 
 ```
-[ok  ] engine   {"ok": true, "manim": "0.21.0", "font": "Poppins", "layouts": 21}
+[ok  ] engine   {"ok": true, "manim": "0.21.0", "font": "Poppins", "layouts": 23}
 [ok  ] ffmpeg   all required filters present
 [ok  ] llm      gemini (gemini-3.5-flash) + deepseek fallback
 [ok  ] tts      elevenlabs (eleven_v4), voice JBFqnCBsd6RMkjVDRZzb
@@ -106,6 +111,9 @@ target/release/story_animator music      # once: generates 3 background tracks i
 # Ideas that fit the channel
 story_animator topics
 story_animator topics --area "bridges and tunnels" --count 5
+
+# The mechanism kit (built-in and generated parts)
+story_animator kit
 
 # Review the script before spending TTS credits (recommended)
 story_animator storyboard "How a mechanical watch keeps time" -o watch.json
@@ -151,8 +159,9 @@ See [docs/API.md](docs/API.md).
 ## Project layout
 
 ```
-src/                 Rust orchestrator (CLI, API, pipeline, niche, writer)
-engine/story_engine/ Python render engine (Manim): layouts, icons, characters, backgrounds
+src/                 Rust orchestrator (CLI, API, pipeline, niche, writer, kit growth)
+engine/story_engine/ Python render engine (Manim): layouts, mechanism kit, icons, characters, backgrounds
+engine/story_engine/kit/library/  Kit parts generated for earlier videos (committed; reused)
 assets/fonts/        Poppins + Libre Baskerville (SIL Open Font License)
 assets/music/        Background-music library (generated; git-ignored)
 examples/            Ready-to-render storyboards
