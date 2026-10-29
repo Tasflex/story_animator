@@ -15,6 +15,7 @@ mod custom;
 mod doctor;
 mod error;
 mod jobs;
+mod kit;
 mod llm;
 mod media;
 mod niche;
@@ -78,6 +79,8 @@ enum Cmd {
         #[arg(long)]
         area: Option<String>,
     },
+    /// List the mechanism-kit parts (built-in and generated for earlier videos).
+    Kit,
     /// Fill the background-music library (assets/music) with ElevenLabs Music,
     /// once; every video then reuses a track from it.
     Music {
@@ -264,6 +267,16 @@ async fn dispatch(cli: Cli, cfg: Config) -> AppResult<()> {
                 }
             }
             println!("\nMake one:  story_animator generate \"<topic>\"");
+            Ok(())
+        }
+        Cmd::Kit => {
+            let lib = kit::library_dir(&cfg);
+            let st = state(cfg).await?;
+            for (name, doc) in &st.catalog.parts {
+                let generated = lib.join(format!("{name}.py")).exists();
+                println!("{:<18} {}{doc}", name, if generated { "[generated] " } else { "" });
+            }
+            println!("\n{} parts; generated ones live in {}", st.catalog.parts.len(), lib.display());
             Ok(())
         }
         Cmd::Music { count } => {

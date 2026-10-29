@@ -248,8 +248,18 @@ pub fn validate_scenes(scenes: &[Scene], budget: &Budget) -> Vec<String> {
             problems.push(format!("scene {} is \"custom\" but has no \"fallback\" {{layout, content}}", i + 1));
         }
     }
+    let narrated = scenes.iter().filter(|s| !s.is_silent()).count();
+    let icon_led = scenes.iter().filter(|s| !s.is_silent() && ICON_LED.contains(&s.layout.as_str())).count();
+    let icon_cap = ((narrated as f64 * ICON_SHARE).round() as usize).max(1);
+    if icon_led > icon_cap {
+        problems.push(format!(
+            "{icon_led} scenes use icon-based layouts ({}); at most {icon_cap} may. Show the mechanism instead with \
+             \"process\" or \"cross_section\"",
+            ICON_LED.join(", ")
+        ));
+    }
     for (i, pair) in scenes.windows(2).enumerate() {
-        if pair[0].layout == pair[1].layout {
+        if pair[0].layout == pair[1].layout && !continues(&pair[1]) {
             problems.push(format!(
                 "scenes {} and {} both use layout '{}'; never repeat a layout back-to-back",
                 i + 1,
@@ -259,6 +269,117 @@ pub fn validate_scenes(scenes: &[Scene], budget: &Budget) -> Vec<String> {
         }
     }
     problems
+}
+
+/// Layouts built mostly from flat icons. Viewers can't see how anything works in
+/// them, so they are capped at ICON_SHARE of the narrated scenes.
+pub const ICON_LED: [&str; 7] = ["hero", "icon_row", "list", "compare", "flow", "cycle", "character"];
+pub const ICON_SHARE: f64 = 0.2;
+/// Layouts that show the mechanism itself.
+pub const MECHANISM: [&str; 3] = ["process", "cross_section", "custom"];
+
+/// A `process` scene that carries on the previous process scene's diagram.
+pub fn continues(s: &Scene) -> bool {
+    s.layout == "process" && s.content["continue"].as_bool() == Some(true)
+}
+
+/// Checks for `process` scenes that need the catalog: parts exist (or say how
+/// to draw a new one), links point at real parts, steps have cues.
+pub fn process_problems(scenes: &[Scene], cat: &Catalog) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut known_ids: Vec<String> = Vec::new();
+    for (i, s) in scenes.iter().enumerate() {
+        if s.layout != "process" {
+            known_ids.clear();
+            continue;
+        }
+        let n = i + 1;
+        if !continues(s) {
+            known_ids.clear();
+        }
+        let parts = s.content["parts"].as_array().cloned().unwrap_or_default();
+        if parts.is_empty() && !continues(s) {
+            problems.push(format!("scene {n} is \"process\" but has no \"parts\""));
+        }
+        for p in &parts {
+            let id = p["id"].as_str().unwrap_or("").to_string();
+            let kind = p["kind"].as_str().unwrap_or("");
+            if id.is_empty() {
+                problems.push(format!("scene {n}: every part needs an \"id\""));
+            }
+            if kind.is_empty() {
+                problems.push(format!("scene {n}: part '{id}' needs a \"kind\""));
+            } else if !cat.has_part(kind) && p["make"].as_str().is_none_or(|m| m.trim().len() < 8) {
+                problems.push(format!(
+                    "scene {n}: part kind '{kind}' is not in the kit; use an existing kit part, or keep it and add \
+                     \"make\": a one-line description of how to draw it"
+                ));
+            }
+            known_ids.push(id);
+        }
+        for l in s.content["links"].as_array().cloned().unwrap_or_default() {
+            for end in ["from", "to"] {
+                let id = l[end].as_str().unwrap_or("").split('.').next().unwrap_or("").to_string();
+                if !known_ids.contains(&id) {
+                    problems.push(format!("scene {n}: link {end} '{id}' is not a part id in this diagram"));
+                }
+            }
+        }
+        let steps = s.content["steps"].as_array().cloned().unwrap_or_default();
+        if steps.is_empty() && !s.is_silent() {
+            problems.push(format!("scene {n}: a narrated \"process\" scene needs \"steps\" that run the machine on cue"));
+        }
+        if !s.is_silent() && steps.iter().any(|st| st["cue"].as_str().is_none_or(|c| c.trim().is_empty())) {
+            problems.push(format!("scene {n}: every process step needs a \"cue\" word from the narration"));
+        }
+    }
+    problems
+}
+
+/// New part kinds a storyboard asks for: (kind, how to draw it, actions it uses, labels).
+pub fn new_part_requests(scenes: &[Scene], cat: &Catalog) -> Vec<(String, String, Vec<String>, Vec<String>)> {
+    let mut out: Vec<(String, String, Vec<String>, Vec<String>)> = Vec::new();
+    for s in scenes.iter().filter(|s| s.layout == "process") {
+        let parts = s.content["parts"].as_array().cloned().unwrap_or_default();
+        for p in &parts {
+            let kind = crate::catalog::normalize_kind(p["kind"].as_str().unwrap_or(""));
+            if kind.is_empty() || cat.has_part(&kind) {
+                continue;
+            }
+            let Some(make) = p["make"].as_str().map(str::trim).filter(|m| !m.is_empty()) else { continue };
+            let id = p["id"].as_str().unwrap_or("");
+            let mut verbs = Vec::new();
+            for st in s.content["steps"].as_array().cloned().unwrap_or_default() {
+                for a in st["do"].as_array().cloned().unwrap_or_default() {
+                    if let Some(obj) = a.as_object() {
+                        for (verb, arg) in obj {
+                            let hit = arg.as_str().is_some_and(|t| t.split([' ', ',']).any(|x| x == id))
+                                || arg.as_array().is_some_and(|v| v.first().and_then(|x| x.as_str()) == Some(id))
+                                || arg.as_object().is_some_and(|o| o.contains_key(id));
+                            if hit && !matches!(verb.as_str(), "focus" | "show" | "hide" | "dim" | "undim" | "label" | "note") {
+                                verbs.push(verb.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            let label = p["label"].as_str().unwrap_or("").to_string();
+            match out.iter_mut().find(|r| r.0 == kind) {
+                Some(r) => {
+                    r.2.extend(verbs);
+                    r.3.push(label);
+                }
+                None => out.push((kind, make.to_string(), verbs, vec![label])),
+            }
+        }
+    }
+    for r in &mut out {
+        r.2.sort();
+        r.2.dedup();
+        r.3.retain(|l| !l.is_empty());
+        r.3.dedup();
+    }
+    out
 }
 
 pub fn normalize_scenes(scenes: &mut [Scene], cat: &Catalog) {

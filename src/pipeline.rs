@@ -231,15 +231,23 @@ pub async fn run(state: &AppState, run_id: &str, req: VideoRequest, progress: Pr
         tokio::fs::write(&subs_path, ass).await?;
     }
 
-    // ---- 5. render scenes ----------------------------------------------
+    // ---- 5. grow the mechanism kit with any new parts this video needs ----
+    let topic = req.topic.clone().unwrap_or_else(|| board.title.clone());
+    let new_parts = crate::kit::grow(state, &board, &dir, &topic).await;
+    if !new_parts.is_empty() {
+        report(&progress, "kit", 0.35, format!("added {} new kit part(s): {}", new_parts.len(), new_parts.join(", ")));
+    }
+
+    // ---- 6. render scenes ----------------------------------------------
     let n = board.scenes.len();
+    let chains = crate::kit::chains(&board);
     let specs: Vec<serde_json::Value> = board
         .scenes
         .iter()
         .zip(&timeline.scenes)
         .enumerate()
         .map(|(i, (scene, t))| {
-            json!({
+            let mut spec = json!({
                 "version": 1,
                 "index": i,
                 "count": n,
@@ -252,11 +260,17 @@ pub async fn run(state: &AppState, run_id: &str, req: VideoRequest, progress: Pr
                 "seed": seed_base + i as u64,
                 "words": t.words,
                 "scene": scene,
-            })
+            });
+            // A continuing process diagram: the engine lays out the whole chain and
+            // replays earlier scenes' steps so this one starts where the last ended.
+            if let Some((contents, index)) = &chains[i] {
+                spec["chain"] = json!({ "contents": contents, "index": index });
+            }
+            spec
         })
         .collect();
 
-    // ---- 5a. one-off diagrams written by the LLM (validated, with fallbacks)
+    // ---- 6a. one-off diagrams written by the LLM (validated, with fallbacks)
     let n_custom = specs.iter().filter(|s| s["scene"]["layout"] == "custom").count();
     if n_custom > 0 {
         report(&progress, "custom", 0.35, format!("writing {n_custom} custom diagram scene(s)"));
@@ -293,7 +307,7 @@ pub async fn run(state: &AppState, run_id: &str, req: VideoRequest, progress: Pr
     )
     .await?;
 
-    // ---- 6. master, then the YouTube video ------------------------------
+    // ---- 7. master, then the YouTube video ------------------------------
     report(&progress, "compose", 0.83, "compositing transitions, narration and music");
     let transitions: Vec<String> = board.scenes.iter().map(|s| s.transition.clone()).collect();
     let master = dir.join("master.mp4");
@@ -322,7 +336,7 @@ pub async fn run(state: &AppState, run_id: &str, req: VideoRequest, progress: Pr
         tracing::warn!(duration, target = cfg.target_duration, "final duration differs from target");
     }
 
-    // ---- 7. the vertical short, cut from the same master -----------------
+    // ---- 8. the vertical short, cut from the same master -----------------
     let mut short_out = None;
     if cfg.shorts && aspect == Aspect::Landscape {
         match short_segment(&board, &timeline, cfg.short_max_secs) {

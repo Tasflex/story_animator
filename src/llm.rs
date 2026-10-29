@@ -22,8 +22,8 @@ use crate::config::{Config, LlmProvider, VisualStyle};
 use crate::error::{AppError, AppResult};
 use crate::niche;
 use crate::storyboard::{
-    Budget, LONG_FORM_SECS, Scene, ShortPick, Storyboard, WORDS_PER_SEC, json_body, normalize_scenes,
-    parse_storyboard, validate_scenes, word_count,
+    Budget, LONG_FORM_SECS, MECHANISM, Scene, ShortPick, Storyboard, WORDS_PER_SEC, json_body, normalize_scenes,
+    parse_storyboard, process_problems, validate_scenes, word_count,
 };
 
 const MAX_ROUNDS: usize = 3;
@@ -90,29 +90,60 @@ fn style_direction(style: VisualStyle, custom: bool, latex: bool) -> String {
             r#"## Style: diagram explainer (3Blue1Brown-like)
 - Use theme "blueprint" (default) or "graphite" (maths, physics, geometry). Backgrounds mostly
   "glow" or "blueprint"; cameras "drift", "push_in" or "static".
-- Show HOW the idea works, not just what it is. Prefer: flow, network, scale, fun_fact, compare,
-  bar_chart, stat, cycle, timeline, graph, vectors, dot_grid, equation, quote, title.
-- Use icon_row / hero / list sparingly (at most 1 in 5 scenes), and character at most once per chapter.
+{MECHANISM_RULES}
+- Supporting layouts: cross_section, scale, fun_fact, stat, graph, vectors, network, dot_grid, equation,
+  bar_chart, timeline, quote, title.
 {custom_rule}- Maths goes in LaTeX "tex" fields{latex_note}. In JSON, escape backslashes: "\\frac{{1}}{{2}}".
 - Function expressions ("expr") are Python maths of x: x**2, sin(x), exp(-x), sqrt(x)."#,
             custom_rule = if custom {
-                "- For a scene that needs a one-off diagram no layout can show (a machine's moving parts, a\n  \
-                 physical process, a cross-section), use layout \"custom\" with a precise \"brief\"\n  \
-                 (objects, positions, colours, what moves on which narration word) and a \"fallback\"\n  \
-                 {\"layout\": ..., \"content\": ...} using another layout.\n"
+                "- Only if no kit part or layout can show it (geometry being cut and rearranged, a very unusual\n  \
+                 motion), use layout \"custom\" with a precise \"brief\" (objects, positions, colours, what moves\n  \
+                 on which narration word) and a \"fallback\" {\"layout\": ..., \"content\": ...}. Max 2 per video.\n"
             } else {
                 "- Do not use the \"custom\" layout.\n"
             },
             latex_note = if latex { "" } else { " (shown as plain text on this machine)" },
         ),
-        VisualStyle::Infographic => r#"## Style: flat infographic explainer (Kurzgesagt-like)
+        VisualStyle::Infographic => format!(
+            r#"## Style: flat infographic explainer (Kurzgesagt-like)
 - Use any non-diagram theme (midnight, sunset, ocean, forest, ember, neon, paper, candy, mono).
-- Favour icon_row, hero, list, compare, stat, scale, fun_fact, bar_chart, flow, timeline, character, quote, cycle.
-- Use "character" scenes for human moments (someone deciding, struggling, discovering).
+{MECHANISM_RULES}
+- Supporting layouts: cross_section, scale, fun_fact, stat, bar_chart, timeline, quote, title; "character"
+  for a human moment (counts towards the icon limit).
 - Do not use the "custom" layout."#
-            .to_string(),
+        ),
     }
 }
+
+/// The core visual rule: viewers must SEE how it works, so mechanisms lead and
+/// icon cards are capped (validated by `storyboard::validate_scenes`).
+const MECHANISM_RULES: &str = r#"- SHOW HOW IT WORKS. The main tool is "process": a working schematic built from kit parts (tanks,
+  valves, pumps, gears, pistons, lasers, generators...) joined by pipes, wires, rays or fibres, whose
+  steps run the machine on cue words (a valve opens, flow starts, a level rises, a rotor spins, the
+  camera moves in on the part being explained). "cross_section" cuts things open layer by layer.
+- Build ONE machine per chapter and grow it: the next process scene sets "continue": true, keeps the same
+  part ids, may add parts/links, and plays new steps. 2-4 consecutive process scenes per chapter is ideal
+  (consecutive process scenes are allowed only with "continue": true).
+- Icon-based layouts (hero, icon_row, list, compare, flow, cycle, character) are limited to 1 in 5 scenes.
+  Never use "flow" where a process diagram could show the real thing.
+- Kit parts are listed below. If the system needs a component the kit lacks, give it a new generic
+  snake_case kind (e.g. "lock_gate", "repeater", "turbofan", "heat_exchanger") plus "make": one line
+  describing how to draw it. It is built once and reused by future videos, so name it generically
+  and prefer existing parts. At most 2 new kinds per video.
+- Every process step is tied to a cue word and does something visible. Place parts with "col"/"row"
+  (small integers, left to right in the order things happen; fractions like 0.5 are fine).
+
+Example process scene content (a canal lock filling):
+{"parts": [{"id": "lake", "kind": "tank", "label": "Upper lake", "width": 1.3, "level": 0.9, "col": 0},
+           {"id": "valve", "kind": "valve", "label": "Inlet valve", "col": 1, "row": 0.6},
+           {"id": "lock", "kind": "tank", "label": "Lock chamber", "width": 1.6, "level": 0.15, "col": 2}],
+ "links": [{"id": "culvert", "from": "lake", "to": "valve", "kind": "pipe", "carries": "water"},
+           {"id": "culvert2", "from": "valve", "to": "lock", "kind": "pipe", "carries": "water"}],
+ "steps": [{"cue": "valve", "do": [{"open": "valve"}, {"focus": "valve"}]},
+           {"cue": "gravity", "do": [{"on": "culvert culvert2"}, {"focus": "all"}, {"note": "No pumps"}]},
+           {"cue": "rises", "do": [{"level": ["lock", 0.85]}, {"level": ["lake", 0.8]}]}]}
+Next scene: {"continue": true, "parts": [{"id": "ship", "kind": "block", "label": "Ship", "col": 2, "row": -0.6}],
+ "steps": [{"cue": "ship", "do": [{"show": "ship"}, {"highlight": "ship"}]}]}"#;
 
 fn voice_direction(cfg: &Config) -> String {
     let mut s = String::from(
@@ -147,10 +178,14 @@ fn vocabulary(cat: &Catalog, style: VisualStyle, custom: bool, long_form: bool) 
     let layouts = serde_json::to_string_pretty(&layout_map).unwrap_or_default();
     let themes = cat.themes.values().map(|t| format!("  - {}: {}", t.name, t.description)).collect::<Vec<_>>().join("\n");
     let backgrounds = cat.backgrounds.iter().map(|(k, v)| format!("  - {k}: {v}")).collect::<Vec<_>>().join("\n");
+    let parts = cat.parts.iter().map(|(k, v)| format!("  - {k}: {v}")).collect::<Vec<_>>().join("\n");
     format!(
         r#"## Vocabulary
 Layouts (name -> purpose and content schema):
 {layouts}
+
+Kit parts for "process" scenes (kind -> what it is, fields, actions):
+{parts}
 
 Icons (use these exact names; pick the closest match): {icons}
 
@@ -184,7 +219,8 @@ const SCENE_SCHEMA: &str = r#"{
 }"#;
 
 const VISUAL_RULES: &str = r#"## Visual direction
-- Never use the same layout in two consecutive scenes. Vary layouts, backgrounds and camera moves.
+- Never use the same layout in two consecutive scenes, except process scenes that continue the same
+  diagram ("continue": true). Vary backgrounds and camera moves.
 - Every visual element should be NAMED in that scene's narration. Put the exact narration word that
   names it into its "cue" field (a single word copied verbatim from the narration, e.g. narration
   "...needs sunlight, water and..." -> cue "sunlight"). The engine reveals each element at the
@@ -217,7 +253,8 @@ async fn write_single(
                 if let Some(t) = req.theme.filter(|t| cat.themes.contains_key(*t)) {
                     sb.theme = t.to_string();
                 }
-                let problems = sb.validate(budget);
+                let mut problems = sb.validate(budget);
+                problems.extend(process_problems(&sb.scenes, cat));
                 tracing::info!(round, words = sb.total_words(), scenes = sb.scenes.len(),
                                problems = problems.len(), "storyboard draft");
                 if problems.is_empty() {
@@ -489,14 +526,23 @@ struct ChapterOut {
     scenes: Vec<Scene>,
 }
 
-fn chapter_problems(scenes: &[Scene], budget: &Budget, i: usize, n: usize) -> Vec<String> {
+fn chapter_problems(scenes: &[Scene], budget: &Budget, cat: &Catalog, i: usize, n: usize) -> Vec<String> {
     let mut p = validate_scenes(scenes, budget);
+    p.extend(process_problems(scenes, cat));
     if scenes.iter().any(|s| s.layout == "chapter") {
         p.push("don't use the \"chapter\" layout; chapter cards are added automatically".into());
     }
     let middle = i > 0 && i + 1 < n;
     if middle && !scenes.iter().any(|s| matches!(s.layout.as_str(), "fun_fact" | "scale" | "stat")) {
         p.push("land the chapter's wow on screen with a \"fun_fact\", \"scale\" or \"stat\" scene".into());
+    }
+    if middle && !scenes.iter().any(|s| MECHANISM.contains(&s.layout.as_str())) {
+        p.push("show how this step works with a \"process\" diagram (or \"cross_section\"); build it up over \
+                2-4 scenes with \"continue\": true"
+            .into());
+    }
+    if n > 1 && middle && scenes.iter().filter(|s| s.layout == "process").count() == 1 && scenes.len() >= 5 {
+        p.push("grow the chapter's process diagram over at least 2 consecutive scenes (\"continue\": true)".into());
     }
     if let Some(first) = scenes.first()
         && first.is_silent()
@@ -612,7 +658,7 @@ Return ONE JSON object, no prose: {{"scenes": [ {SCENE_SCHEMA} ]}}
         match parsed {
             Ok(mut out) => {
                 normalize_scenes(&mut out.scenes, cat);
-                let problems = chapter_problems(&out.scenes, &budget, i, n);
+                let problems = chapter_problems(&out.scenes, &budget, cat, i, n);
                 let w: usize = out.scenes.iter().map(|s| word_count(&s.narration)).sum();
                 tracing::info!(chapter = i + 1, round, words = w, scenes = out.scenes.len(),
                                problems = problems.len(), "chapter draft");
@@ -742,6 +788,50 @@ pub async fn write_scene_code(client: &Client, cfg: &Config, cat: &Catalog, r: &
         a1 = r.theme.accent,
         a2 = r.theme.accent2,
         a3 = r.theme.accent3,
+    );
+    if let (Some(code), Some(err)) = (r.previous_code, r.previous_error) {
+        user.push_str(&format!(
+            "\nYOUR PREVIOUS ATTEMPT FAILED. Fix it.\nError:\n{err}\n\nPrevious code:\n```python\n{code}\n```\n"
+        ));
+    }
+    user.push_str("\nWrite the complete file now.");
+    let raw = complete(client, cfg, &system, &user, false).await?;
+    extract_python(&raw).ok_or_else(|| AppError::Llm("no python code block in response".into()))
+}
+
+/// Inputs for writing one new, reusable kit part.
+pub struct PartCodeRequest<'a> {
+    pub kind: &'a str,
+    pub make: &'a str,
+    pub actions: &'a [String],
+    pub labels: &'a [String],
+    pub topic: &'a str,
+    pub previous_code: Option<&'a str>,
+    pub previous_error: Option<&'a str>,
+}
+
+/// Ask the LLM for a kit part file (`PART` + `build(k, spec)`).
+pub async fn write_part_code(client: &Client, cfg: &Config, cat: &Catalog, r: &PartCodeRequest<'_>) -> AppResult<String> {
+    let existing = cat.parts.keys().cloned().collect::<Vec<_>>().join(", ");
+    let system = format!(
+        "You are an expert Manim Community animator extending a reusable kit of schematic parts for engineering \
+         explainer videos. Output only code.\n{}",
+        cat.part_api
+    );
+    let mut actions: Vec<String> = r.actions.to_vec();
+    if actions.is_empty() {
+        actions = vec!["on".into(), "off".into()];
+    }
+    let mut user = format!(
+        "NEW PART: \"{kind}\"\nWHAT TO DRAW: {make}\nIT MUST SUPPORT THESE ACTIONS: {acts} (plus a sensible highlight)\n\
+         First used for: {topic} (labels: {labels}). Keep it generic so other videos can reuse it.\n\
+         Parts that already exist (don't duplicate them; you may draw something similar in your own style): {existing}\n\
+         Set PART[\"name\"] to \"{kind}\" and list the actions you implement.\n",
+        kind = r.kind,
+        make = r.make,
+        acts = actions.join(", "),
+        topic = r.topic,
+        labels = if r.labels.is_empty() { "-".into() } else { r.labels.join(", ") },
     );
     if let (Some(code), Some(err)) = (r.previous_code, r.previous_error) {
         user.push_str(&format!(

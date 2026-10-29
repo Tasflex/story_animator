@@ -946,10 +946,13 @@ LAYOUT_DOCS = {
 from .custom import CUSTOM_DOC, layout_custom  # noqa: E402
 from .diagrams import DIAGRAM_DOCS, DIAGRAM_LAYOUTS  # noqa: E402
 from .marvels import MARVEL_DOCS, MARVEL_LAYOUTS  # noqa: E402
+from .process import PROCESS_DOCS, PROCESS_LAYOUTS  # noqa: E402
 
 LAYOUTS.update(DIAGRAM_LAYOUTS)
 LAYOUTS.update(MARVEL_LAYOUTS)
+LAYOUTS.update(PROCESS_LAYOUTS)
 LAYOUTS["custom"] = layout_custom
 LAYOUT_DOCS.update(DIAGRAM_DOCS)
 LAYOUT_DOCS.update(MARVEL_DOCS)
+LAYOUT_DOCS.update(PROCESS_DOCS)
 LAYOUT_DOCS["custom"] = CUSTOM_DOC

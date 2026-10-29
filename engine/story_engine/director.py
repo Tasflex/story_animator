@@ -143,10 +143,15 @@ class Ctx:
         end = min(self.narr_end, self.content_end - 1.2) if end is None else end
         end = max(end, start + min_gap * max(n - 1, 1))
         found: list[float | None] = []
-        after = start - 0.3
+        # Search from the start of the narration, not from `start`: a cue word
+        # spoken just before `start` (e.g. during an intro build) must still
+        # match its first occurrence, not a repeat of the word later on. The
+        # monotonic pass below pushes such early matches to `start`.
+        search_from = min(start, self.narr_start) - 0.3
+        after = search_from
         for c in cues:
             t = self.cue(c, None, after=after)
-            if t is not None and start - 0.3 <= t <= end + 0.5:
+            if t is not None and search_from <= t <= end + 0.5:
                 found.append(t)
                 after = t + 0.05
             else:

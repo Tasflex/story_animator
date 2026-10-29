@@ -75,12 +75,17 @@ def catalog() -> dict:
     from .icons import ICONS
     from .custom import CUSTOM_API
     from .director import latex_available
+    from .kit import PART_API, catalog_docs
+    from .kit.parts import ALIASES
     from .layouts import LAYOUT_DOCS
     from .theme import THEMES
 
     return {
         "version": story_engine.__version__,
         "layouts": LAYOUT_DOCS,
+        "parts": catalog_docs(),
+        "part_aliases": ALIASES,
+        "part_api": PART_API,
         "icons": sorted(ICONS),
         "backgrounds": BACKGROUND_NOTES,
         "themes": {k: v.to_dict() for k, v in THEMES.items()},
@@ -136,6 +141,64 @@ def cmd_validate(args) -> int:
     return 0
 
 
+def cmd_validate_part(args) -> int:
+    """Check an AI-written kit part: sandbox, PART metadata, then a dry-run
+    process scene that builds it, scales it and fires every action."""
+    import tempfile
+    import traceback
+
+    from manim import tempconfig
+
+    from . import kit
+    from .custom import check_code
+    from .director import SpecScene
+    from .stage import Stage
+    from .theme import THEMES
+
+    path = Path(args.file)
+    src = path.read_text(encoding="utf-8")
+    problems = check_code(src)
+    if problems:
+        print(json.dumps({"ok": False, "error": "\n".join(problems)}))
+        return 1
+    try:
+        build, meta = kit.load_part_file(path)
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}))
+        return 1
+    if not isinstance(meta, dict) or not meta.get("name") or not meta.get("use"):
+        print(json.dumps({"ok": False, "error": "PART must be a dict with at least 'name' and 'use'"}))
+        return 1
+    name = kit.normalize_kind(args.name or meta["name"])
+    kit.library()[name] = (build, meta)  # make it resolvable for this run only
+    actions = [a for a in (meta.get("actions") or []) if isinstance(a, str)][:8]
+    steps = [{"cue": "", "do": [{a: "x"}]} for a in actions] + [{"cue": "", "do": [{"highlight": "x"}]}]
+    spec = {"version": 1, "index": 0, "count": 1, "duration": 2.0 + 0.9 * len(steps), "fps": 10,
+            "width": 1920, "height": 1080, "theme": THEMES["blueprint"].to_dict(), "seed": 3, "words": [],
+            "strict": True,
+            "scene": {"narration": "", "layout": "process", "camera": "static", "background": "plain",
+                      "content": {"parts": [{"id": "x", "kind": name, "label": "Test", "col": 0},
+                                            {"id": "y", "kind": "tank", "col": 1}],
+                                  "links": [{"from": "x", "to": "y", "kind": "pipe", "id": "l"}],
+                                  "steps": steps}}}
+    spec["content_end"] = spec["duration"]
+    stage = Stage.for_pixels(1920, 1080)
+    tmp = tempfile.TemporaryDirectory(prefix="se_part_", ignore_cleanup_errors=True)
+    cfg = {"dry_run": True, "pixel_width": 320, "pixel_height": 180, "frame_rate": 10,
+           "frame_width": stage.width, "frame_height": stage.height, "media_dir": tmp.name,
+           "disable_caching": True, "verbosity": "ERROR", "progress_bar": "none"}
+    try:
+        with tmp, tempconfig(cfg):
+            SpecScene(spec).render()
+    except Exception as exc:
+        tb = traceback.format_exc().splitlines()
+        relevant = [ln for ln in tb if "<custom-scene>" in ln or "Error" in ln or "error" in ln][-8:]
+        print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}\n" + "\n".join(relevant)}))
+        return 1
+    print(json.dumps({"ok": True, "name": name, "actions": actions}))
+    return 0
+
+
 def cmd_check(_args) -> int:
     report = {"ok": True, "python": sys.version.split()[0], "engine": story_engine.__version__}
     try:
@@ -168,9 +231,14 @@ def main(argv=None) -> int:
     sub.add_parser("check", help="environment self-test")
     v = sub.add_parser("validate", help="dry-run a custom scene spec")
     v.add_argument("--spec", required=True)
+    vp = sub.add_parser("validate-part", help="sandbox-check and dry-run an AI-written kit part file")
+    vp.add_argument("--file", required=True)
+    vp.add_argument("--name", default=None)
     args = p.parse_args(argv)
     if args.cmd == "validate":
         return cmd_validate(args)
+    if args.cmd == "validate-part":
+        return cmd_validate_part(args)
     if args.cmd == "render":
         return cmd_render(args)
     if args.cmd == "catalog":

@@ -48,6 +48,16 @@ pub struct Catalog {
     /// Whether LaTeX is available for `equation`/MathTex rendering.
     #[serde(default)]
     pub latex: bool,
+    /// Mechanism-kit parts usable in `process` scenes: name -> what it is / its actions.
+    /// Includes parts generated for earlier videos (engine/story_engine/kit/library).
+    #[serde(default)]
+    pub parts: BTreeMap<String, String>,
+    /// Other names the engine resolves to a part (e.g. "chamber" -> "tank").
+    #[serde(default)]
+    pub part_aliases: BTreeMap<String, String>,
+    /// Instructions + API reference for LLM-written kit parts.
+    #[serde(default)]
+    pub part_api: String,
 }
 
 impl Catalog {
@@ -68,9 +78,39 @@ impl Catalog {
         serde_json::from_str(&out).map_err(|e| AppError::Config(format!("bad catalog JSON: {e}")))
     }
 
+    /// Whether the engine can draw a part of this kind (built-in, generated,
+    /// alias, or a plural of one), using the engine's name normalisation.
+    pub fn has_part(&self, kind: &str) -> bool {
+        let k = normalize_kind(kind);
+        self.parts.contains_key(&k)
+            || self.part_aliases.contains_key(&k)
+            || k.strip_suffix('s').is_some_and(|s| self.parts.contains_key(s))
+    }
+
     pub fn theme(&self, name: &str) -> &Theme {
         self.themes.get(name).or_else(|| self.themes.get("blueprint")).unwrap_or_else(|| {
             self.themes.values().next().expect("catalog has at least one theme")
         })
+    }
+}
+
+/// Same rule as the engine's `kit.normalize_kind`: lowercase snake_case, max 32 chars.
+pub fn normalize_kind(kind: &str) -> String {
+    let mut out = String::new();
+    for ch in kind.trim().to_lowercase().chars() {
+        let c = if ch.is_ascii_alphanumeric() { ch } else { '_' };
+        if !(c == '_' && (out.is_empty() || out.ends_with('_'))) {
+            out.push(c);
+        }
+    }
+    out.trim_end_matches('_').chars().take(32).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn kinds_normalise_like_the_engine() {
+        assert_eq!(super::normalize_kind(" Lock Gate! "), "lock_gate");
+        assert_eq!(super::normalize_kind("turbo--fan"), "turbo_fan");
     }
 }

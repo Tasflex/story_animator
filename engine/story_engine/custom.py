@@ -69,8 +69,9 @@ def check_code(src: str) -> list[str]:
     return problems
 
 
-def load_build(src: str):
-    """Execute checked source in a restricted namespace; return its build()."""
+def load_namespace(src: str, extra: dict | None = None, filename: str = "<custom-scene>") -> dict:
+    """Execute checked source in a restricted namespace and return it. Used for
+    custom scenes and for AI-written kit parts (which get `extra` names)."""
     problems = check_code(src)
     if problems:
         raise ValueError("custom code rejected:\n" + "\n".join(problems))
@@ -80,8 +81,14 @@ def load_build(src: str):
     ns = {name: getattr(manim, name) for name in dir(manim) if not name.startswith("_")}
     ns.update({"np": np, "numpy": np, "math": math, "random": random.Random(7),
                "__builtins__": {**SAFE_BUILTINS, "__import__": _guarded_import}})
-    exec(compile(src, "<custom-scene>", "exec"), ns)  # noqa: S102 (checked above)
-    return ns["build"]
+    ns.update(extra or {})
+    exec(compile(src, filename, "exec"), ns)  # noqa: S102 (checked above)
+    return ns
+
+
+def load_build(src: str):
+    """Execute checked source in a restricted namespace; return its build()."""
+    return load_namespace(src)["build"]
 
 
 def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
