@@ -168,9 +168,13 @@ pub async fn compose(cfg: &Config, inp: ComposeInput<'_>) -> AppResult<()> {
         ));
     }
     if inp.music.is_some() {
+        // Tracks arrive at very different levels, so each is normalised to
+        // -16 LUFS first; MUSIC_VOLUME then sets the bed relative to that
+        // (0.18 ≈ -31 LUFS, about 16 dB under the -15 LUFS voice).
         let fade_out = (total - 3.0).max(0.0);
         f.push_str(&format!(
             "[{m}:a]aformat=sample_rates=48000:channel_layouts=stereo,atrim=0:{total:.4},asetpts=PTS-STARTPTS,\
+             loudnorm=I=-16:TP=-2:LRA=11,aresample=48000,\
              volume={vol:.3},afade=t=in:d=1.5,afade=t=out:st={fade_out:.3}:d=3[mus];\
              [voice]asplit=2[vo1][vo2];\
              [mus][vo2]sidechaincompress=threshold=0.02:ratio=5:attack=30:release=500[duck];\

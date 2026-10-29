@@ -248,7 +248,7 @@ impl Config {
             elevenlabs_voice_id: var("ELEVENLABS_VOICE_ID"),
             tts_concurrency: parse("TTS_CONCURRENCY", 3usize)?.max(1),
             music,
-            music_volume: parse("MUSIC_VOLUME", 0.07f64)?,
+            music_volume: parse("MUSIC_VOLUME", 0.18f64)?,
             target_duration: parse("TARGET_DURATION_SECS", 300.0f64)?,
             shorts: flag("SHORTS", true),
             short_max_secs: parse("SHORT_MAX_SECS", 59.0f64)?,

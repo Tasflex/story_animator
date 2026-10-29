@@ -29,6 +29,9 @@ use crate::storyboard::{
 const MAX_ROUNDS: usize = 3;
 /// Length of the silent card shown at the start of each chapter.
 const CHAPTER_CARD_SECS: f64 = 3.2;
+/// LLM-written scenes are the least predictable visuals, so a long video
+/// keeps at most this many; extra ones become their fallback layouts.
+const MAX_CUSTOM_LONG: usize = 2;
 
 pub struct StoryRequest<'a> {
     pub topic: &'a str,
@@ -668,6 +671,16 @@ fn assemble(outline: &Outline, chapters: Vec<Vec<Scene>>) -> Storyboard {
             && scenes.len() > from
         {
             short = Some(ShortPick { from, to: scenes.len() - 1, title: sp.title.clone() });
+        }
+    }
+    let mut customs = 0;
+    for s in scenes.iter_mut().filter(|s| s.layout == "custom") {
+        customs += 1;
+        if customs > MAX_CUSTOM_LONG
+            && let Some(layout) = s.content["fallback"]["layout"].as_str().map(str::to_string)
+        {
+            s.content = s.content["fallback"]["content"].clone();
+            s.layout = layout;
         }
     }
     Storyboard {

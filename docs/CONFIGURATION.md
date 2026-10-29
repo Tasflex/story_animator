@@ -60,7 +60,7 @@ Only narrated scenes are sent to ElevenLabs; chapter cards and visual beats are 
 | Variable | Default | Description |
 |---|---|---|
 | `BACKGROUND_MUSIC` | `library` | `library`: one track per video from `assets/music/` (fill it once with `story_animator music`), or a path to another folder. `elevenlabs`: generate a score per video from the storyboard's `music` brief (costs every time). A path to one audio file (looped and trimmed). `none`. |
-| `MUSIC_VOLUME` | `0.07` | Music level before ducking (0–1). Kept low on purpose; it ducks further under the voice and is mainly heard in silent scenes. |
+| `MUSIC_VOLUME` | `0.18` | Music level (0–1) applied after each track is loudness-normalised to -16 LUFS: 0.18 puts the bed about 16 dB under the voice. It ducks further while the narrator speaks, so it is mainly heard in silent scenes. |
 | `BURN_SUBTITLES` | `1` | Burn word-highlight captions into the video |
 | `SUBTITLE_FONT` | `Poppins` | Must be in `assets/fonts` or installed system-wide |
 

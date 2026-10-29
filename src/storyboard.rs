@@ -129,7 +129,7 @@ impl Budget {
             target_words: target,
             min_scenes: ((target_secs / 12.0).round() as usize).max(3),
             max_scenes: ((target_secs / 6.0).round() as usize).max(4),
-            max_custom: ((target_secs / 75.0).round() as usize).max(2),
+            max_custom: 2,
             max_silent: (target_secs / 40.0) as usize,
         }
     }

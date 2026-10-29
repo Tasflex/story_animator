@@ -324,8 +324,8 @@ How it works:
 4. Errors go back to the AI for up to `CUSTOM_ATTEMPTS` tries.
 5. If it still fails, the `fallback` renders instead.
 
-Use at most one per chapter (two in a short video, four in a five-minute
-one), and make the brief concrete: objects, positions, colours, and which
+Use at most two per video (extra ones render their fallback layouts),
+and make the brief concrete: objects, positions, colours, and which
 word triggers each step. Validated code is cached in
 `storage/runs/<id>/scenes/scene_XX.custom.py`, and you can edit it by hand.
 

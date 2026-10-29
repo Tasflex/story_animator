@@ -21,8 +21,8 @@ vocabulary of layouts, icons and motions. All the craft (composition,
 easing, typography, timing) lives in tested code that always renders.
 
 The old version had one real strength: a bespoke diagram for each idea.
-That survives in a contained form. A storyboard may mark a few scenes
-(up to 4 in a five-minute video) as `custom`, and for those the LLM writes
+That survives in a contained form. A storyboard may mark up to two scenes
+as `custom` (extra ones become their fallback layouts), and for those the LLM writes
 code for that **one scene**, against the same small `ctx` API the built-in
 layouts use. The code is statically sandbox-checked, dry-run, and retried
 with the error message. If it still fails, the scene's declared `fallback`
@@ -196,7 +196,8 @@ without anything colliding.
 `assets/music/`, chosen by the run id. `story_animator music` fills the
 library once with ElevenLabs Music: tracks a little longer than the video,
 with briefs suited to engineering explainers (wonder, circuit, scale,
-workshop). Music plays at `MUSIC_VOLUME` (0.07) and is sidechain-ducked
+workshop). Each track is loudness-normalised to -16 LUFS, then played at
+`MUSIC_VOLUME` (0.18, about 16 dB under the voice) and sidechain-ducked
 under the narration, so it is only clearly audible during silent scenes.
 
 ## Visual orchestration

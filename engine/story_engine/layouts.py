@@ -420,11 +420,17 @@ def layout_stat(ctx: Ctx):
         return t.move_to(anchor.get_center())
 
     label = ctx.text(c.get("label", ""), size=40, max_width=st.content_w, max_chars=22 if st.portrait else 34)
+    # The context line is part of the composition, so it is sized with it and
+    # can never spill into the caption band.
+    ctxt = None
+    if c.get("context"):
+        ctxt = ctx.text(c["context"], size=28, color=th.muted, max_width=st.content_w, max_chars=40)
+    caption = VGroup(label, ctxt).arrange(DOWN, buff=0.25) if ctxt is not None else label
     if ring_mode:
         R = min(st.content_h * 0.36, 2.1)
         track = Circle(radius=R, stroke_color=th.muted, stroke_width=18, stroke_opacity=0.25)
         top = VGroup(track)
-        layout = VGroup(top, label).arrange(DOWN, buff=0.45)
+        layout = VGroup(top, caption).arrange(DOWN, buff=0.45)
         fit(layout, st.content_w, st.content_h)
         layout.move_to(st.content_center)
         anchor.move_to(track.get_center())
@@ -443,7 +449,7 @@ def layout_stat(ctx: Ctx):
         icon = ctx.icon(c.get("icon"), size=1.5) if c.get("icon") else None
         probe = ctx.text(f"{prefix}{value:,.{dec}f}{suffix}", size=size, weight="BOLD")
         holder = Rectangle(width=probe.width, height=probe.height, stroke_width=0, fill_opacity=0)
-        parts = VGroup(*([icon] if icon else []), holder, label).arrange(DOWN, buff=0.45)
+        parts = VGroup(*([icon] if icon else []), holder, caption).arrange(DOWN, buff=0.45)
         fit(parts, st.content_w, st.content_h)
         parts.move_to(st.content_center)
         anchor.move_to(holder.get_center())
@@ -464,9 +470,7 @@ def layout_stat(ctx: Ctx):
     t0 = t_say
     tl = ctx.cue(c.get("label_cue") or c.get("label"), None, after=t0 - 1)
     ctx.at(max(tl or t0 + 0.8, 0.6), lambda: FadeIn(label, shift=UP * 0.2), 0.6)
-    if c.get("context"):
-        ctxt = ctx.text(c["context"], size=28, color=th.muted, max_width=st.content_w, max_chars=40)
-        ctxt.next_to(label, DOWN, buff=0.25)
+    if ctxt is not None:
         tc = ctx.cue(c.get("context"), None, after=t0) or t0 + 2.4
         ctx.at(tc, lambda: FadeIn(ctxt, shift=UP * 0.15), 0.6)
     ctx.at(min(t0 + 2.3, ctx.content_end - 1.0), _ring_burst(ctx, anchor.copy().scale(1).set_width(3), th.accent), 0.9)
