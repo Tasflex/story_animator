@@ -1,0 +1,107 @@
+{
+  "title": "Why Bees Matter",
+  "theme": "forest",
+  "music": "light curious pizzicato strings and soft marimba, warm, 95 bpm, no vocals",
+  "scenes": [
+    {
+      "narration": "Take a bite of your lunch. There's a good chance a bee made it possible.",
+      "layout": "title",
+      "background": "rays",
+      "camera": "push_in",
+      "transition": "fade",
+      "content": { "heading": "Why Bees Matter", "subheading": "The tiny workers feeding the world", "icon": "bee" }
+    },
+    {
+      "narration": "Most flowering plants can't move, so they need help to spread their pollen. That's where bees come in.",
+      "layout": "hero",
+      "title": "Pollination",
+      "background": "hills",
+      "camera": "drift",
+      "transition": "slideleft",
+      "content": { "icon": "flower", "label": "Pollen on the move", "tag": "plant + bee", "effect": "orbit", "effect_cue": "bees" }
+    },
+    {
+      "narration": "Apples, almonds, coffee and even chocolate all depend on pollinators to grow.",
+      "layout": "icon_row",
+      "title": "On Your Plate",
+      "background": "bokeh",
+      "camera": "pan_right",
+      "transition": "smoothleft",
+      "content": {
+        "items": [
+          { "icon": "apple", "label": "Apples", "cue": "Apples" },
+          { "icon": "plant", "label": "Almonds", "cue": "almonds" },
+          { "icon": "cup", "label": "Coffee", "cue": "coffee" },
+          { "icon": "gift", "label": "Chocolate", "cue": "chocolate" }
+        ]
+      }
+    },
+    {
+      "narration": "In fact, around seventy five percent of the world's food crops benefit from pollination.",
+      "layout": "stat",
+      "title": "Crops That Need Them",
+      "background": "gradient",
+      "camera": "push_in",
+      "transition": "circleopen",
+      "content": { "value": 75, "suffix": "%", "label": "of food crops benefit", "cue": "seventy" }
+    },
+    {
+      "narration": "But bees are in trouble. Pesticides, disease and disappearing wildflowers are shrinking their colonies.",
+      "layout": "flow",
+      "title": "Under Pressure",
+      "background": "dots",
+      "camera": "drift",
+      "transition": "wipeleft",
+      "content": {
+        "steps": [
+          { "icon": "warning", "label": "Pesticides", "cue": "Pesticides" },
+          { "icon": "virus", "label": "Disease", "cue": "disease" },
+          { "icon": "flower", "label": "Fewer flowers", "cue": "wildflowers" },
+          { "icon": "chart_down", "label": "Fewer bees", "cue": "shrinking" }
+        ]
+      }
+    },
+    {
+      "narration": "Mia wondered what she could do. Her grandfather smiled and said, start with a garden.",
+      "layout": "character",
+      "title": "What Can We Do?",
+      "background": "city",
+      "camera": "pull_out",
+      "transition": "slideup",
+      "content": {
+        "characters": [
+          { "look": "kid", "pose": "think", "expression": "worried", "speaking": false },
+          { "look": "elder", "pose": "stand", "expression": "happy", "speaking": true, "color": "accent3" }
+        ],
+        "bubble": "Start with a garden!",
+        "bubble_cue": "start",
+        "prop": "flower",
+        "beats": [ { "cue": "smiled", "character": 1, "pose": "present", "expression": "excited" },
+                   { "cue": "garden", "character": 0, "pose": "cheer", "expression": "excited" } ]
+      }
+    },
+    {
+      "narration": "Plant flowers, skip the sprays, and give bees a home. Small actions, big harvest.",
+      "layout": "list",
+      "title": "Help the Bees",
+      "background": "hills",
+      "camera": "drift",
+      "transition": "dissolve",
+      "content": {
+        "items": [
+          { "icon": "flower", "text": "Plant native flowers", "cue": "flowers" },
+          { "icon": "cross", "text": "Skip the pesticide sprays", "cue": "sprays" },
+          { "icon": "house", "text": "Give bees a home", "cue": "home" }
+        ]
+      }
+    },
+    {
+      "narration": "Save the bees, and you save a lot more than honey.",
+      "layout": "quote",
+      "background": "bokeh",
+      "camera": "push_in",
+      "transition": "fadeblack",
+      "content": { "text": "Save the bees, and you save a lot more than honey.", "highlight": "honey" }
+    }
+  ]
+}

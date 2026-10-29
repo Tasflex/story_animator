@@ -1,4 +1,23 @@
-target/
-storage/
-venv/
+# Rust build output
+/target
+
+# Secrets — never commit API keys
 .env
+.env.*
+!.env.example
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Generated media (runs, renders, caches, old outputs)
+/storage/
+/media/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

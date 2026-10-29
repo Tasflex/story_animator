@@ -1,0 +1,97 @@
+{
+  "title": "The Base-Rate Trap",
+  "theme": "blueprint",
+  "music": "sparse curious piano and soft synth pads, thoughtful, 80 bpm, no vocals",
+  "scenes": [
+    {
+      "narration": "A test for a rare disease is ninety nine percent accurate. You test positive. How worried should you be?",
+      "layout": "stat",
+      "title": "The Base-Rate Trap",
+      "background": "glow",
+      "camera": "push_in",
+      "transition": "fade",
+      "content": { "value": 99, "suffix": "%", "label": "accurate test", "cue": "ninety" }
+    },
+    {
+      "narration": "Picture a thousand people. Only one of them actually has the disease.",
+      "layout": "dot_grid",
+      "title": "A Thousand People",
+      "background": "blueprint",
+      "camera": "drift",
+      "transition": "dissolve",
+      "content": {
+        "total": 1000,
+        "groups": [ { "count": 1, "label": "1 sick", "cue": "one", "color": "accent2" } ]
+      }
+    },
+    {
+      "narration": "The test catches that one person. But a one percent error rate also flags about ten healthy people.",
+      "layout": "dot_grid",
+      "title": "False Alarms",
+      "background": "blueprint",
+      "camera": "static",
+      "transition": "fade",
+      "content": {
+        "total": 1000,
+        "shuffle": true,
+        "groups": [
+          { "count": 1, "label": "1 sick", "cue": "catches", "color": "accent2" },
+          { "count": 10, "label": "10 false positives", "cue": "flags", "color": "accent" }
+        ],
+        "focus_cue": "healthy"
+      }
+    },
+    {
+      "narration": "So among everyone who tests positive, eleven people, only one is truly sick. That is about nine percent.",
+      "layout": "equation",
+      "title": "Do the Maths",
+      "background": "glow",
+      "camera": "drift",
+      "transition": "smoothleft",
+      "content": {
+        "steps": [
+          { "tex": "P(\\text{sick} \\mid +) = \\frac{\\text{true positives}}{\\text{all positives}}", "cue": "among" },
+          { "tex": "P(\\text{sick} \\mid +) = \\frac{1}{1 + 10}", "cue": "eleven", "note": "one sick, ten false alarms" },
+          { "tex": "P(\\text{sick} \\mid +) \\approx 9\\%", "cue": "nine" }
+        ]
+      }
+    },
+    {
+      "narration": "Accuracy describes the test. The base rate, how common the disease is, decides what a positive result means.",
+      "layout": "compare",
+      "title": "Two Different Numbers",
+      "background": "glow",
+      "camera": "drift",
+      "transition": "wipeleft",
+      "content": {
+        "left": { "icon": "check", "label": "Accuracy", "points": ["About the test"], "cue": "Accuracy" },
+        "right": { "icon": "people", "label": "Base rate", "points": ["About the population"], "cue": "base" },
+        "winner": "right", "winner_cue": "decides"
+      }
+    },
+    {
+      "narration": "As the disease gets more common, the same positive test becomes far more convincing.",
+      "layout": "graph",
+      "title": "When Rates Change",
+      "background": "blueprint",
+      "camera": "drift",
+      "transition": "fade",
+      "content": {
+        "x_range": [0, 0.2],
+        "y_range": [0, 1],
+        "functions": [ { "expr": "0.99*x / (0.99*x + 0.01*(1 - x))", "label": "P(\\text{sick} \\mid +)", "cue": "common" } ],
+        "trace": { "function": 0, "from": 0.001, "to": 0.2, "cue": "convincing" },
+        "x_label": "\\text{prevalence}",
+        "y_label": "P"
+      }
+    },
+    {
+      "narration": "Before you trust a result, always ask how rare the thing really is.",
+      "layout": "quote",
+      "background": "glow",
+      "camera": "push_in",
+      "transition": "fadeblack",
+      "content": { "text": "Always ask how rare the thing really is.", "highlight": "rare" }
+    }
+  ]
+}
