@@ -667,6 +667,141 @@ def i_drone(c):
     return VGroup(arms, rotors, body, circ(0.08, c.second))
 
 
+# --- engineering & infrastructure (the channel's core vocabulary) -----------
+
+def i_bridge(c):
+    water = rrect(2.1, 0.32, 0.06, LTBLUE, y=-0.8, op=0.55)
+    towers = VGroup(*[rrect(0.13, 1.55, 0.03, c.main, x=x, y=0.12) for x in (-0.55, 0.55)])
+    deck = rrect(2.1, 0.13, 0.03, c.muted, y=-0.38)
+    span = ParametricFunction(lambda t: P(t, -0.08 + 0.95 * (t / 0.55) ** 2), t_range=[-0.55, 0.55],
+                              stroke_color=c.light, stroke_width=6)
+    sides = VGroup(L((-1.05, -0.32), (-0.55, 0.87), c.light, 6), L((1.05, -0.32), (0.55, 0.87), c.light, 6))
+    hangers = VGroup(*[L((x, -0.08 + 0.95 * (x / 0.55) ** 2), (x, -0.33), c.light, 2.5).set_opacity(0.8)
+                       for x in (-0.42, -0.28, -0.14, 0.14, 0.28, 0.42)])
+    piers = VGroup(*[rrect(0.2, 0.4, 0.03, c.muted, x=x, y=-0.62) for x in (-0.55, 0.55)])
+    return VGroup(water, piers, hangers, span, sides, towers, deck)
+
+
+def i_tower(c):
+    legs = poly([(-0.75, -1.0), (-0.11, 0.72), (0.11, 0.72), (0.75, -1.0), (0.42, -1.0), (0.0, -0.5),
+                 (-0.42, -1.0)], c.main)
+    braces = VGroup(L((-0.5, -0.38), (0.25, 0.12), c.light, 3), L((0.5, -0.38), (-0.25, 0.12), c.light, 3))
+    decks = VGroup(rrect(1.05, 0.11, 0.02, c.light, y=-0.38), rrect(0.58, 0.09, 0.02, c.light, y=0.12))
+    spire = poly([(-0.07, 0.72), (0.0, 1.02), (0.07, 0.72)], c.main)
+    return VGroup(legs, braces.set_opacity(0.55), decks, spire)
+
+
+def i_skyscraper(c):
+    side = rrect(0.5, 1.2, 0.04, c.second, x=-0.64, y=-0.4)
+    side2 = rrect(0.46, 0.95, 0.04, c.third, x=0.62, y=-0.53)
+    main = poly([(-0.36, -1.0), (-0.36, 0.62), (0.0, 0.85), (0.36, 0.62), (0.36, -1.0)], c.main)
+    antenna = L((0.0, 0.85), (0.0, 1.05), c.light, 4)
+    wins = VGroup(*[rrect(0.12, 0.1, 0.02, c.light, x=x, y=y, op=0.85)
+                    for y in np.arange(-0.8, 0.5, 0.24) for x in (-0.15, 0.15)])
+    return VGroup(side, side2, antenna, main, wins)
+
+
+def i_dam(c):
+    water = poly([(-1.0, 0.55), (-0.18, 0.55), (0.02, -0.9), (-1.0, -0.9)], BLUE)
+    ripples = VGroup(*[L((-0.85 + dx, 0.35 - dy), (-0.55 + dx, 0.35 - dy), WHITE, 3).set_opacity(0.5)
+                       for dx, dy in ((0.0, 0.0), (0.25, 0.35), (-0.05, 0.7))])
+    wall = poly([(-0.22, 0.75), (0.14, 0.75), (0.62, -0.9), (-0.02, -0.9)], c.muted)
+    crest = rrect(0.5, 0.1, 0.02, c.light, x=-0.04, y=0.78)
+    spill = VGroup(*[L((0.5, -0.45 - k * 0.15), (1.0, -0.62 - k * 0.15), LTBLUE, 5) for k in range(3)])
+    return VGroup(water, ripples, spill, wall, crest)
+
+
+def i_turbine(c):
+    mast = poly([(-0.06, 0.3), (0.06, 0.3), (0.12, -1.0), (-0.12, -1.0)], c.light)
+    blades = VGroup(*[poly([(0.0, 0.0), (0.09, 0.16), (0.03, 0.78), (-0.05, 0.16)], c.light)
+                      .rotate(k * TAU / 3 + 0.35, about_point=P(0, 0)) for k in range(3)]).shift(P(0, 0.32))
+    hub = circ(0.11, c.main, y=0.32)
+    ground = rrect(0.9, 0.08, 0.03, c.muted, y=-1.0)
+    return VGroup(ground, mast, blades, hub)
+
+
+def i_crane(c):
+    mast = rrect(0.16, 1.75, 0.02, GOLD, x=-0.4, y=-0.12)
+    lattice = VGroup(*[L((-0.47, y), (-0.33, y + 0.2), DKGOLD, 3) for y in np.arange(-0.95, 0.55, 0.2)])
+    jib = rrect(1.85, 0.12, 0.02, GOLD, x=0.18, y=0.76)
+    peak = VGroup(L((-0.4, 1.05), (1.0, 0.8), c.light, 2.5), L((-0.4, 1.05), (-0.95, 0.8), c.light, 2.5))
+    counter = rrect(0.32, 0.24, 0.03, c.muted, x=-0.86, y=0.62)
+    cab = rrect(0.26, 0.22, 0.03, c.main, x=-0.4, y=0.58)
+    cable = L((0.72, 0.7), (0.72, -0.12), c.light, 3)
+    load = rrect(0.42, 0.3, 0.03, c.second, x=0.72, y=-0.3)
+    base = rrect(0.6, 0.12, 0.02, c.muted, x=-0.4, y=-1.0)
+    return VGroup(base, mast, lattice, peak, jib, counter, cab, cable, load)
+
+
+def i_ship(c):
+    water = smooth([(-1.05, -0.7), (-0.6, -0.62), (-0.1, -0.72), (0.4, -0.62), (1.05, -0.7)], LTBLUE, op=0.0)
+    water.set_stroke(LTBLUE, width=5)
+    hull = poly([(-1.0, -0.12), (1.0, -0.12), (0.78, -0.6), (-0.82, -0.6)], c.main)
+    cols = [c.second, c.third, c.light]
+    boxes = VGroup(*[rrect(0.24, 0.2, 0.02, cols[(i + j) % 3], x=-0.2 + i * 0.27, y=0.0 + j * 0.22)
+                     for i in range(4) for j in range(2)])
+    bridge = VGroup(rrect(0.32, 0.5, 0.03, c.light, x=-0.68, y=0.15), rrect(0.26, 0.08, 0.02, LTBLUE, x=-0.68, y=0.3))
+    return VGroup(boxes, bridge, hull, water)
+
+
+def i_train(c):
+    rail = L((-1.05, -0.72), (1.05, -0.72), c.muted, 5)
+    body = poly([(-1.0, -0.45), (-1.0, 0.4), (0.45, 0.4), (1.0, -0.05), (1.0, -0.45)], c.main)
+    stripe = rrect(1.95, 0.08, 0.02, c.third, x=-0.02, y=-0.28)
+    wins = VGroup(*[rrect(0.26, 0.24, 0.04, LTBLUE, x=x, y=0.12) for x in (-0.75, -0.4, -0.05, 0.3)])
+    wheels = VGroup(*[circ(0.13, "#222222", x=x, y=-0.55) for x in (-0.7, -0.35, 0.35, 0.7)])
+    return VGroup(rail, body, stripe, wins, wheels)
+
+
+def i_jet_engine(c):
+    cowl = circ(0.98, c.muted)
+    inner = circ(0.82, c.dark)
+    blades = VGroup(*[poly([(0.0, 0.1), (0.8, 0.12), (0.8, -0.02), (0.0, -0.02)], c.light)
+                      .rotate(k * TAU / 14, about_point=P(0, 0)) for k in range(14)])
+    return VGroup(cowl, inner, blades.set_opacity(0.9), circ(0.24, c.main), circ(0.08, c.light))
+
+
+def i_satellite(c):
+    def panel(x):
+        p = rrect(0.62, 0.42, 0.03, BLUE, x=x)
+        grid = VGroup(L((x, -0.21), (x, 0.21), LTBLUE, 2), L((x - 0.31, 0), (x + 0.31, 0), LTBLUE, 2))
+        return VGroup(p, grid)
+    bar = L((-0.95, 0), (0.95, 0), c.light, 4)
+    body = rrect(0.42, 0.55, 0.06, GOLD)
+    dish = Arc(radius=0.22, start_angle=PI * 0.15, angle=PI * 0.7, stroke_color=c.light, stroke_width=5).shift(P(0, 0.2))
+    return VGroup(bar, panel(-0.68), panel(0.68), body, dish, circ(0.05, c.light, y=0.48)).rotate(-PI / 8)
+
+
+def i_pylon(c):
+    legs = poly([(-0.6, -1.0), (-0.1, 0.85), (0.1, 0.85), (0.6, -1.0), (0.35, -1.0), (0.0, 0.0), (-0.35, -1.0)], c.muted)
+    arms = VGroup(rrect(1.6, 0.08, 0.02, c.light, y=0.5), rrect(1.1, 0.08, 0.02, c.light, y=0.82))
+    wires = VGroup(*[L((x, y - 0.12), (x + 0.35 * (1 if x > 0 else -1), y - 0.3), c.main, 3)
+                     for x, y in ((-0.78, 0.5), (0.78, 0.5), (-0.53, 0.82), (0.53, 0.82))])
+    insulators = VGroup(*[circ(0.05, GOLD, x=x, y=y - 0.1) for x, y in ((-0.78, 0.5), (0.78, 0.5), (-0.53, 0.82), (0.53, 0.82))])
+    return VGroup(legs, wires, arms, insulators)
+
+
+def i_wrench(c):
+    handle = rrect(0.28, 1.5, 0.14, c.light, y=-0.3)
+    head = filled(Difference(circ(0.45, c.light, y=0.6), Rectangle(width=0.32, height=0.6).move_to(P(0, 0.9))), c.light)
+    return VGroup(handle, head).rotate(-PI / 4)
+
+
+def i_ruler(c):
+    body = rrect(2.0, 0.55, 0.06, GOLD)
+    ticks = VGroup(*[L((x, 0.27), (x, 0.27 - (0.22 if k % 2 == 0 else 0.12)), DKGOLD, 3)
+                     for k, x in enumerate(np.linspace(-0.85, 0.85, 11))])
+    return VGroup(body, ticks).rotate(PI / 8)
+
+
+def i_magnet(c):
+    arch = filled(Intersection(Difference(circ(0.75, RED), circ(0.38, RED)),
+                               Rectangle(width=2.0, height=0.8).move_to(P(0, 0.4))), RED)
+    legs = VGroup(*[rrect(0.37, 0.72, 0.0, RED, x=x, y=-0.36) for x in (-0.565, 0.565)])
+    tips = VGroup(*[rrect(0.37, 0.26, 0.02, "#CFD6DE", x=x, y=-0.85) for x in (-0.565, 0.565)])
+    return VGroup(arch, legs, tips)
+
+
 ICONS: dict[str, Callable] = {
     name[2:]: fn for name, fn in globals().items() if name.startswith("i_") and callable(fn)
 }
@@ -722,6 +857,20 @@ SYNONYMS: dict[str, str] = {
     "present": "gift", "reward": "gift", "bonus": "gift",
     "shop": "cart", "shopping": "cart", "buy": "cart", "market": "cart", "commerce": "cart",
     "industry": "factory", "pollution": "factory", "manufacturing": "factory",
+    "suspension_bridge": "bridge", "viaduct": "bridge", "span": "bridge", "overpass": "bridge",
+    "landmark": "tower", "monument": "tower", "eiffel": "tower", "eiffel_tower": "tower", "lattice": "tower",
+    "statue": "tower", "skyline": "skyscraper", "highrise": "skyscraper", "city": "skyscraper",
+    "reservoir": "dam", "hydro": "dam", "hydropower": "dam", "hydroelectric": "dam",
+    "wind": "turbine", "wind_turbine": "turbine", "windmill": "turbine", "wind_power": "turbine",
+    "construction": "crane", "building_site": "crane", "lift": "crane",
+    "boat": "ship", "cargo": "ship", "container_ship": "ship", "port": "ship", "shipping": "ship",
+    "railway": "train", "rail": "train", "metro": "train", "subway": "train", "locomotive": "train",
+    "jet": "jet_engine", "turbofan": "jet_engine", "engine_jet": "jet_engine", "fan": "jet_engine",
+    "orbit": "satellite", "gps": "satellite", "space_station": "satellite",
+    "power_line": "pylon", "power_grid": "pylon", "grid": "pylon", "transmission": "pylon",
+    "tool": "wrench", "tools": "wrench", "repair": "wrench", "maintenance": "wrench", "engineering": "wrench",
+    "measure": "ruler", "length": "ruler", "height": "ruler", "size": "ruler", "scale": "ruler",
+    "magnetism": "magnet", "magnetic": "magnet", "attraction": "magnet",
     "gene": "dna", "genetics": "dna", "biology": "dna",
     "germ": "virus", "disease": "virus", "bacteria": "virus", "infection": "virus",
     "grow": "plant", "seed": "plant", "sprout": "plant",

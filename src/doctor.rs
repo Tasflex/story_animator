@@ -89,6 +89,14 @@ pub async fn run(cfg: &Config) -> Vec<Check> {
             MusicSource::None => "none".to_string(),
             MusicSource::File(p) => p.display().to_string(),
             MusicSource::ElevenLabs => "generated per video (ElevenLabs Music)".into(),
+            MusicSource::Library(dir) => {
+                let tracks = std::fs::read_dir(dir).map(|rd| rd.filter_map(Result::ok).count()).unwrap_or(0);
+                if tracks == 0 {
+                    format!("library {} is empty — run `story_animator music`", dir.display())
+                } else {
+                    format!("library: {tracks} track(s) in {}", dir.display())
+                }
+            }
         },
     ));
     out

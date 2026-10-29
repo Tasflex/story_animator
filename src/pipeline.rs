@@ -558,7 +558,7 @@ async fn narrate(
     let model = if silent { "silent".to_string() } else { cfg.elevenlabs_model.clone() };
     let done = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let total = voiced.len().max(1);
-    let mut results = stream::iter(voiced.iter().map(|&i| {
+    let mut results = stream::iter(voiced.clone().into_iter().map(|i| {
         let scene = &board.scenes[i];
         // Neighbouring narrated text keeps intonation flowing across scenes.
         let prev = board.scenes[..i].iter().rev().find(|s| !s.is_silent()).map(|s| s.narration.as_str());

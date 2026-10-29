@@ -21,3 +21,6 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Background music library (generated once on the server with `story_animator music`)
+/assets/music/

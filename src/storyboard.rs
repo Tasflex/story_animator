@@ -178,10 +178,6 @@ impl Storyboard {
         self.scenes.iter().map(|s| word_count(&s.narration)).sum()
     }
 
-    pub fn silent_secs(&self) -> f64 {
-        self.scenes.iter().map(Scene::hold_secs).sum()
-    }
-
     /// Hard problems that require rewriting the storyboard.
     pub fn validate(&self, budget: &Budget) -> Vec<String> {
         let mut problems = validate_scenes(&self.scenes, budget);

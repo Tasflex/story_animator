@@ -78,8 +78,9 @@ def _burst(ctx: Ctx, m, color=None):
 
 
 def _spaced(s: str) -> str:
-    """Letter-spaced small caps look for kickers ('C H A P T E R')."""
-    return "  ".join(" ".join(word) for word in s.upper().split())
+    """Letter-spaced caps for kickers ('C H A P T E R · 2'). make_text collapses
+    runs of spaces, so words are separated by a middle dot instead."""
+    return " · ".join(" ".join(word) for word in s.upper().split())
 
 
 def _word_lines(ctx: Ctx, text: str, size: float, max_chars: int, color=None, weight="SEMIBOLD"):
@@ -222,11 +223,17 @@ def layout_scale(ctx: Ctx):
     unit = str(c.get("unit", ""))
     cc = st.content_center
     W = min(st.content_w * (0.95 if st.portrait else 0.8), n * 3.0)
-    H = st.content_h * (0.68 if c.get("callout") else 0.76)
     ground_y = cc[1] - st.content_h / 2 + 0.75
     slot = W / n
     cw = min(1.3, slot * 0.42)
     x0 = cc[0] - W / 2
+    cap_h = min(0.85, slot * 0.4)
+    top_lim = (st.content_top if ctx.s.get("title") else st.height / 2 - 0.6) - 0.1
+    low = [k for k, v in enumerate(vals) if v < 0.55 * vmax]
+    # Room above the tallest column for its icon and value label (and the
+    # callout, when no short column leaves space for it beside the tall ones).
+    H = top_lim - ground_y - cap_h - 0.12 - 0.5 - (0.75 if c.get("callout") and not low else 0.0)
+    H = max(H, 1.5)
 
     ground = Line([x0 - 0.3, ground_y, 0], [x0 + W + 0.3, ground_y, 0], stroke_color=th.muted, stroke_width=4)
     hatch = VGroup(*[Line([x, ground_y, 0], [x - 0.18, ground_y - 0.18, 0], stroke_color=th.muted,
@@ -240,16 +247,14 @@ def layout_scale(ctx: Ctx):
         body = RoundedRectangle(corner_radius=min(0.08, cw / 4), width=cw, height=h, stroke_color=col_c,
                                 stroke_width=3, fill_color=col_c, fill_opacity=0.16)
         body.move_to([x, ground_y + h / 2, 0])
-        cap = ctx.icon(it.get("icon"), size=min(0.85, slot * 0.4), accent=i, label=it.get("label", ""))
+        cap = ctx.icon(it.get("icon"), size=cap_h, accent=i, label=it.get("label", ""))
         cap.next_to(body, UP, buff=0.12)
-        ax = x + cw / 2 + 0.28
+        ax = x + cw / 2 + 0.22
         arrow = DoubleArrow([ax, ground_y, 0], [ax, ground_y + h, 0], buff=0, stroke_width=2.5, color=th.muted,
                             tip_length=0.14, max_tip_length_to_length_ratio=0.35)
         disp = str(it.get("display") or f"{v:,.{0 if float(v).is_integer() else 1}f}{unit}")
-        vt = ctx.text(disp, size=26, weight="BOLD", color=th.ink, max_width=slot * 0.5)
-        vt.next_to(arrow, RIGHT, buff=0.1)
-        if vt.get_right()[0] > x0 + slot * (i + 1) + 0.2:
-            vt.next_to(cap, UP, buff=0.1)
+        vt = ctx.text(disp, size=28, weight="BOLD", color=th.ink, max_width=slot * 0.9)
+        vt.next_to(cap, UP, buff=0.1)
         lab = ctx.text(it.get("label", ""), size=24, color=th.muted, max_width=slot * 0.92, max_chars=14)
         lab.next_to([x, ground_y - 0.2, 0], DOWN, buff=0.12)
         cols.append(body), caps.append(cap), dims.append(VGroup(arrow, vt)), labels.append(lab)
@@ -268,9 +273,14 @@ def layout_scale(ctx: Ctx):
     ctx.at(tg, lambda: Create(guide), 0.7)
     if c.get("callout"):
         pill = _pill(ctx, str(c["callout"])[:28], size=30)
-        pill.move_to([cc[0], min(cols[top].get_top()[1] + 0.95, st.content_top - 0.35), 0])
-        if abs(pill.get_x() - caps[top].get_x()) < pill.width / 2 + 0.6:
-            pill.next_to(caps[top], LEFT if cols[top].get_x() > cc[0] else RIGHT, buff=0.4)
+        if low:
+            # Over the short columns, just under the dashed line of the tallest.
+            lx = sum(cols[k].get_x() for k in low) / len(low)
+            above_labels = max(dims[k][1].get_top()[1] for k in low) + pill.height / 2 + 0.2
+            pill.move_to([lx, max(cols[top].get_top()[1] - 0.55, above_labels), 0])
+            pill.set_x(np.clip(pill.get_x(), x0 + pill.width / 2 - 0.3, x0 + W - pill.width / 2 + 0.3))
+        else:
+            pill.move_to([cc[0], max(vlabel.get_top()[1] for vlabel in (d[1] for d in dims)) + 0.5, 0])
         tc = ctx.cue(c.get("callout_cue"), None, after=times[-1] - 0.5)
         tc = max(tc if tc is not None else tg + 0.4, tg + 0.3)
         ctx.at(min(tc, ctx.content_end - 1.0), lambda: [FadeIn(pill, scale=0.6, rate_func=POP),
