@@ -1,18 +1,34 @@
 //! Storyboard writing with an LLM (Gemini first, DeepSeek as fallback).
 //!
-//! The LLM never writes code. It fills in a JSON storyboard using only the
-//! vocabulary from the engine catalog; `Storyboard::validate` checks pacing
-//! and a repair round feeds the problems back until it passes.
+//! The LLM fills in a JSON storyboard using only the vocabulary from the
+//! engine catalog; validation checks pacing and a repair round feeds the
+//! problems back until it passes.
+//!
+//! Short videos are written in one call. Long videos (five minutes) are
+//! written in two stages so the script stays tight from start to finish:
+//!   1. an outline: chapters, the "wow" each one lands, which chapter becomes
+//!      the vertical short, and how well the topic fits the channel niche
+//!      (off-niche topics are refused unless forced);
+//!   2. each chapter's scenes, written in parallel against its own word
+//!      budget, then joined with silent chapter cards in between.
 
+use futures::future::try_join_all;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::catalog::Catalog;
 use crate::config::{Config, LlmProvider, VisualStyle};
 use crate::error::{AppError, AppResult};
-use crate::storyboard::{Budget, Storyboard, parse_storyboard};
+use crate::niche;
+use crate::storyboard::{
+    Budget, LONG_FORM_SECS, Scene, ShortPick, Storyboard, WORDS_PER_SEC, json_body, normalize_scenes,
+    parse_storyboard, validate_scenes, word_count,
+};
 
 const MAX_ROUNDS: usize = 3;
+/// Length of the silent card shown at the start of each chapter.
+const CHAPTER_CARD_SECS: f64 = 3.2;
 
 pub struct StoryRequest<'a> {
     pub topic: &'a str,
@@ -20,6 +36,10 @@ pub struct StoryRequest<'a> {
     pub audience: Option<&'a str>,
     pub portrait: bool,
     pub style: VisualStyle,
+    /// Multiplies the word budget (a draft that read too long/short is rewritten with this).
+    pub word_scale: f64,
+    /// Make the video even if the topic doesn't fit the channel niche.
+    pub force: bool,
 }
 
 pub async fn write_storyboard(
@@ -33,8 +53,155 @@ pub async fn write_storyboard(
             "no LLM key configured: set GEMINI_API_KEY or DEEPSEEK_API_KEY (or pass a storyboard file)".into(),
         ));
     }
-    let budget = Budget::for_duration(cfg.target_duration);
-    let system = system_prompt(cat, &budget, cfg.target_duration, req.portrait, req.style, cfg.custom_scenes);
+    let budget = Budget::for_duration(cfg.target_duration).scaled(req.word_scale);
+    if cfg.target_duration < LONG_FORM_SECS {
+        return write_single(client, cfg, cat, req, &budget).await;
+    }
+    let outline = write_outline(client, cfg, cat, req, &budget).await?;
+    tracing::info!(title = %outline.title, chapters = outline.chapters.len(), fit = outline.fit.score, "outline ready");
+    let sum_secs: f64 = outline.chapters.iter().map(|c| c.seconds.max(5.0)).sum();
+    let chapters = try_join_all(outline.chapters.iter().enumerate().map(|(i, _)| {
+        let share = outline.chapters[i].seconds.max(5.0) / sum_secs;
+        let words = (budget.target_words as f64 * share).round() as usize;
+        write_chapter(client, cfg, cat, req, &outline, i, words)
+    }))
+    .await?;
+    let mut sb = assemble(&outline, chapters);
+    sb.normalize(cat);
+    if let Some(t) = req.theme.filter(|t| cat.themes.contains_key(*t)) {
+        sb.theme = t.to_string();
+    }
+    for p in sb.validate(&budget) {
+        tracing::warn!("storyboard: {p}");
+    }
+    Ok(sb)
+}
+
+// ---------------------------------------------------------------------------
+// shared prompt fragments
+// ---------------------------------------------------------------------------
+
+fn style_direction(style: VisualStyle, custom: bool, latex: bool) -> String {
+    match style {
+        VisualStyle::Diagram => format!(
+            r#"## Style: diagram explainer (3Blue1Brown-like)
+- Use theme "blueprint" (default) or "graphite" (maths, physics, geometry). Backgrounds mostly
+  "glow" or "blueprint"; cameras "drift", "push_in" or "static".
+- Show HOW the idea works, not just what it is. Prefer: flow, network, scale, fun_fact, compare,
+  bar_chart, stat, cycle, timeline, graph, vectors, dot_grid, equation, quote, title.
+- Use icon_row / hero / list sparingly (at most 1 in 5 scenes), and character at most once per chapter.
+{custom_rule}- Maths goes in LaTeX "tex" fields{latex_note}. In JSON, escape backslashes: "\\frac{{1}}{{2}}".
+- Function expressions ("expr") are Python maths of x: x**2, sin(x), exp(-x), sqrt(x)."#,
+            custom_rule = if custom {
+                "- For a scene that needs a one-off diagram no layout can show (a machine's moving parts, a\n  \
+                 physical process, a cross-section), use layout \"custom\" with a precise \"brief\"\n  \
+                 (objects, positions, colours, what moves on which narration word) and a \"fallback\"\n  \
+                 {\"layout\": ..., \"content\": ...} using another layout.\n"
+            } else {
+                "- Do not use the \"custom\" layout.\n"
+            },
+            latex_note = if latex { "" } else { " (shown as plain text on this machine)" },
+        ),
+        VisualStyle::Infographic => r#"## Style: flat infographic explainer (Kurzgesagt-like)
+- Use any non-diagram theme (midnight, sunset, ocean, forest, ember, neon, paper, candy, mono).
+- Favour icon_row, hero, list, compare, stat, scale, fun_fact, bar_chart, flow, timeline, character, quote, cycle.
+- Use "character" scenes for human moments (someone deciding, struggling, discovering).
+- Do not use the "custom" layout."#
+            .to_string(),
+    }
+}
+
+fn voice_direction(cfg: &Config) -> String {
+    let mut s = String::from(
+        "## Narration\n\
+         - Spoken English only: no emojis, stage directions, URLs, or symbols. Write numbers the way they\n  \
+         are spoken (\"seventy one percent\", \"nineteen sixty nine\").\n\
+         - Conversational, vivid, concrete. Short sentences. Every sentence earns its place.\n\
+         - Be factually accurate. Prefer well-established facts; if a number is uncertain, say it\n  \
+         generally rather than inventing precision.\n",
+    );
+    if cfg.tts_supports_tags() {
+        s.push_str(
+            "- The voice is expressive and follows AUDIO TAGS in square brackets. Start most scenes with one tag\n  \
+             that fits the moment, and occasionally add one mid-sentence: [curious], [excited], [amazed],\n  \
+             [impressed], [serious], [thoughtful], [whispers], [chuckles], [dramatic pause], [short pause].\n  \
+             At most 2 tags per scene. Tags are not spoken and don't count as words. Keep the delivery\n  \
+             warm and documentary-like; save [excited]/[amazed] for real wow moments.\n",
+        );
+    }
+    s
+}
+
+fn vocabulary(cat: &Catalog, style: VisualStyle, custom: bool, long_form: bool) -> String {
+    let mut layout_map = cat.layouts.clone();
+    if !custom || style == VisualStyle::Infographic {
+        layout_map.remove("custom");
+    }
+    layout_map.remove("chapter");
+    if !long_form {
+        layout_map.remove("fun_fact");
+    }
+    let layouts = serde_json::to_string_pretty(&layout_map).unwrap_or_default();
+    let themes = cat.themes.values().map(|t| format!("  - {}: {}", t.name, t.description)).collect::<Vec<_>>().join("\n");
+    let backgrounds = cat.backgrounds.iter().map(|(k, v)| format!("  - {k}: {v}")).collect::<Vec<_>>().join("\n");
+    format!(
+        r#"## Vocabulary
+Layouts (name -> purpose and content schema):
+{layouts}
+
+Icons (use these exact names; pick the closest match): {icons}
+
+Themes:
+{themes}
+
+Backgrounds:
+{backgrounds}
+
+Cameras: {cameras}
+Transitions: {transitions}
+Character looks: {looks}; poses: {poses}; expressions: {expressions}"#,
+        icons = cat.icons.join(", "),
+        cameras = cat.cameras.join(", "),
+        transitions = cat.transitions.join(", "),
+        looks = cat.looks.join(", "),
+        poses = cat.poses.join(", "),
+        expressions = cat.expressions.join(", "),
+    )
+}
+
+const SCENE_SCHEMA: &str = r#"{
+  "narration": "what the narrator says in this scene ('' for a silent visual beat)",
+  "layout": "<layout name>",
+  "title": "optional on-screen heading <= 5 words (omit for title/quote/fun_fact layouts)",
+  "background": "<background name>",
+  "camera": "<camera move>",
+  "transition": "<transition INTO this scene>",
+  "hold": "seconds, ONLY for a silent visual beat (3-6)",
+  "content": { ...fields for the chosen layout... }
+}"#;
+
+const VISUAL_RULES: &str = r#"## Visual direction
+- Never use the same layout in two consecutive scenes. Vary layouts, backgrounds and camera moves.
+- Every visual element should be NAMED in that scene's narration. Put the exact narration word that
+  names it into its "cue" field (a single word copied verbatim from the narration, e.g. narration
+  "...needs sunlight, water and..." -> cue "sunlight"). The engine reveals each element at the
+  moment that word is spoken, so name the first element early in the sentence.
+- On-screen text is short (labels <= 3 words). Never put full narration sentences on screen;
+  captions are added automatically.
+- Keep one theme for the whole video."#;
+
+// ---------------------------------------------------------------------------
+// single-call storyboards (short videos)
+// ---------------------------------------------------------------------------
+
+async fn write_single(
+    client: &Client,
+    cfg: &Config,
+    cat: &Catalog,
+    req: &StoryRequest<'_>,
+    budget: &Budget,
+) -> AppResult<Storyboard> {
+    let system = single_prompt(cfg, cat, budget, req);
     let mut user = user_prompt(req);
     let mut last_problems: Vec<String> = Vec::new();
     let mut best: Option<(usize, Storyboard)> = None;
@@ -47,7 +214,7 @@ pub async fn write_storyboard(
                 if let Some(t) = req.theme.filter(|t| cat.themes.contains_key(*t)) {
                     sb.theme = t.to_string();
                 }
-                let problems = sb.validate(&budget);
+                let problems = sb.validate(budget);
                 tracing::info!(round, words = sb.total_words(), scenes = sb.scenes.len(),
                                problems = problems.len(), "storyboard draft");
                 if problems.is_empty() {
@@ -56,13 +223,13 @@ pub async fn write_storyboard(
                 if best.as_ref().is_none_or(|(n, _)| problems.len() < *n) {
                     best = Some((problems.len(), sb.clone()));
                 }
-                user = repair_prompt(req, &raw, &problems);
+                user = repair_prompt(&user_prompt(req), &raw, &problems);
                 last_problems = problems;
             }
             Err(e) => {
                 tracing::warn!(round, error = %e, "storyboard unparseable");
                 last_problems = vec![e.clone()];
-                user = repair_prompt(req, &raw, &last_problems);
+                user = repair_prompt(&user_prompt(req), &raw, &last_problems);
             }
         }
     }
@@ -89,69 +256,21 @@ fn user_prompt(req: &StoryRequest<'_>) -> String {
     if let Some(t) = req.theme {
         s.push_str(&format!("Use theme: {t}\n"));
     }
-    s.push_str("Write the storyboard JSON now.");
+    s.push_str("Write the JSON now.");
     s
 }
 
-fn repair_prompt(req: &StoryRequest<'_>, previous: &str, problems: &[String]) -> String {
+fn repair_prompt(base: &str, previous: &str, problems: &[String]) -> String {
     format!(
-        "{}\n\nYour previous storyboard had these problems:\n- {}\n\nPrevious attempt:\n{}\n\n\
-         Return the corrected, complete storyboard JSON only.",
-        user_prompt(req),
+        "{base}\n\nYour previous answer had these problems:\n- {}\n\nPrevious attempt:\n{}\n\n\
+         Return the corrected, complete JSON only.",
         problems.join("\n- "),
-        previous.chars().take(12000).collect::<String>()
+        previous.chars().take(14000).collect::<String>()
     )
 }
 
-fn style_direction(style: VisualStyle, custom: bool, latex: bool) -> String {
-    match style {
-        VisualStyle::Diagram => format!(
-            r#"## Style: diagram explainer (3Blue1Brown-like)
-- Use theme "blueprint" (default) or "graphite" (maths, physics, geometry). Backgrounds mostly
-  "glow" or "blueprint"; cameras "drift", "push_in" or "static".
-- Show HOW the idea works, not just what it is. Prefer: equation, graph, vectors, dot_grid,
-  network, flow, compare, bar_chart, stat, timeline, cycle, quote, title.
-- Use icon_row / hero / list at most 2 times total, and character at most once.
-{custom_rule}- Maths goes in LaTeX "tex" fields{latex_note}. In JSON, escape backslashes: "\\frac{{1}}{{2}}".
-- Function expressions ("expr") are Python maths of x: x**2, sin(x), exp(-x), sqrt(x)."#,
-            custom_rule = if custom {
-                "- For 1-2 scenes that need a one-off diagram no layout can show (a machine, a physical\n  \
-                 process, geometry being cut and rearranged), use layout \"custom\" with a precise \"brief\"\n  \
-                 (objects, positions, colours, what moves on which narration word) and a \"fallback\"\n  \
-                 {\"layout\": ..., \"content\": ...} using another layout.\n"
-            } else {
-                "- Do not use the \"custom\" layout.\n"
-            },
-            latex_note = if latex { "" } else { " (shown as plain text on this machine)" },
-        ),
-        VisualStyle::Infographic => r#"## Style: flat infographic explainer (Kurzgesagt-like)
-- Use any non-diagram theme (midnight, sunset, ocean, forest, ember, neon, paper, candy, mono).
-- Favour icon_row, hero, list, compare, stat, bar_chart, flow, timeline, character, quote, cycle.
-- Use "character" scenes for human moments (someone deciding, struggling, discovering).
-- Do not use the "custom" layout."#
-            .to_string(),
-    }
-}
-
-fn system_prompt(cat: &Catalog, b: &Budget, target: f64, portrait: bool, style: VisualStyle, custom: bool) -> String {
-    let mut layout_map = cat.layouts.clone();
-    if !custom || style == VisualStyle::Infographic {
-        layout_map.remove("custom");
-    }
-    let layouts = serde_json::to_string_pretty(&layout_map).unwrap_or_default();
-    let direction = style_direction(style, custom, cat.latex);
-    let themes = cat
-        .themes
-        .values()
-        .map(|t| format!("  - {}: {}", t.name, t.description))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let backgrounds = cat
-        .backgrounds
-        .iter()
-        .map(|(k, v)| format!("  - {k}: {v}"))
-        .collect::<Vec<_>>()
-        .join("\n");
+fn single_prompt(cfg: &Config, cat: &Catalog, b: &Budget, req: &StoryRequest<'_>) -> String {
+    let target = cfg.target_duration;
     format!(
         r#"You are the head writer and director of a premium animated explainer channel
 (think Kurzgesagt, TED-Ed, Vox). You write storyboards for EXACTLY {target:.0}-second
@@ -164,76 +283,402 @@ Return ONE JSON object, no prose, no markdown:
   "title": "punchy video title, <= 6 words",
   "theme": "<theme name>",
   "music": "short music brief, e.g. 'curious light pizzicato, warm, 90 bpm, no vocals'",
-  "scenes": [
-    {{
-      "narration": "what the narrator says in this scene",
-      "layout": "<layout name>",
-      "title": "optional on-screen heading <= 5 words (omit for title/quote layouts)",
-      "background": "<background name>",
-      "camera": "<camera move>",
-      "transition": "<transition INTO this scene>",
-      "content": {{ ...fields for the chosen layout... }}
-    }}
-  ]
+  "scenes": [ {SCENE_SCHEMA} ]
 }}
 
 ## Timing — this is what makes the video exactly {target:.0}s
-- {min_s}-{max_s} scenes (aim for 7). Total narration {min_w}-{max_w} words, aim for {tw}.
-- Each scene 12-30 words. Narration is read by a TTS voice at ~150 words/minute.
-- Spoken English only: no emojis, stage directions, URLs, or symbols. Write numbers
-  the way they are spoken ("seventy one percent", "nineteen sixty nine").
+- {min_s}-{max_s} scenes (aim for 7). Total narration {min_w}-{max_w} spoken words, aim for {tw}.
+- Each scene 12-30 words. Narration is read at ~150 words/minute.
 
 ## Story
 - Arc: hook (surprising question/fact) -> context -> 2-4 escalating insights -> payoff -> memorable closer.
 - Scene 1 should be a strong hook; use layout "title" or "hero" or "stat".
 - The last scene is a short closer (layout "title" or "quote" works well).
-- Conversational, vivid, concrete. Every sentence earns its place.
-- Be factually accurate. Prefer well-established facts; if a number or detail is uncertain,
-  say it generally rather than inventing precision.
 
-## Visual direction
-- Never use the same layout in two consecutive scenes. Use at least 5 different layouts.
-- Every visual element should be NAMED in that scene's narration. Put the exact narration
-  word that names it into its "cue" field (a single word copied verbatim from the narration,
-  e.g. narration "...needs sunlight, water and..." -> cue "sunlight"). The engine reveals
-  each element at the moment that word is spoken.
-- On-screen text is short (labels <= 3 words). Never put full narration sentences on screen;
-  captions are added automatically.
-- Keep one theme for the whole video. Vary backgrounds and camera moves for rhythm.
+{voice}
+{VISUAL_RULES}
 - Video is {orientation}.
 
 {direction}
 
-## Vocabulary
-Layouts (name -> purpose and content schema):
-{layouts}
-
-Icons (use these exact names; pick the closest match): {icons}
-
-Themes:
-{themes}
-
-Backgrounds:
-{backgrounds}
-
-Cameras: {cameras}
-Transitions: {transitions}
-Character looks: {looks}; poses: {poses}; expressions: {expressions}
+{vocab}
 "#,
         min_s = b.min_scenes,
         max_s = b.max_scenes,
         min_w = b.min_words,
         max_w = b.max_words,
         tw = b.target_words,
-        orientation = if portrait { "vertical 9:16 (phone)" } else { "horizontal 16:9" },
-        icons = cat.icons.join(", "),
-        cameras = cat.cameras.join(", "),
-        transitions = cat.transitions.join(", "),
-        looks = cat.looks.join(", "),
-        poses = cat.poses.join(", "),
-        expressions = cat.expressions.join(", "),
-        direction = direction,
+        voice = voice_direction(cfg),
+        orientation = if req.portrait { "vertical 9:16 (phone)" } else { "horizontal 16:9" },
+        direction = style_direction(req.style, cfg.custom_scenes, cat.latex),
+        vocab = vocabulary(cat, req.style, cfg.custom_scenes, false),
     )
+}
+
+// ---------------------------------------------------------------------------
+// long videos, stage 1: the outline
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Fit {
+    #[serde(default)]
+    pub score: f64,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChapterPlan {
+    pub name: String,
+    #[serde(default)]
+    pub goal: String,
+    #[serde(default)]
+    pub beats: Vec<String>,
+    /// The fun fact / record / engineering marvel this chapter lands.
+    #[serde(default)]
+    pub wow: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// Approximate narrated seconds.
+    #[serde(default = "default_chapter_secs")]
+    pub seconds: f64,
+}
+
+fn default_chapter_secs() -> f64 {
+    45.0
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShortPlan {
+    pub chapter: usize,
+    #[serde(default)]
+    pub title: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Outline {
+    pub title: String,
+    #[serde(default)]
+    pub theme: String,
+    #[serde(default)]
+    pub music: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub fit: Fit,
+    pub chapters: Vec<ChapterPlan>,
+    #[serde(default)]
+    pub short: Option<ShortPlan>,
+}
+
+fn outline_problems(o: &Outline) -> Vec<String> {
+    let mut p = Vec::new();
+    let n = o.chapters.len();
+    if !(4..=7).contains(&n) {
+        p.push(format!("use 4-7 chapters (got {n})"));
+    }
+    if let Some(first) = o.chapters.first()
+        && !(10.0..=45.0).contains(&first.seconds)
+    {
+        p.push("chapter 1 is the cold open: 15-35 seconds".into());
+    }
+    for (i, c) in o.chapters.iter().enumerate() {
+        if c.name.trim().is_empty() {
+            p.push(format!("chapter {} has no name", i + 1));
+        }
+        if i > 0 && i + 1 < n && c.wow.trim().len() < 10 {
+            p.push(format!("chapter {} needs a concrete \"wow\" (fun fact, record or engineering marvel)", i + 1));
+        }
+    }
+    match &o.short {
+        Some(s) if s.chapter == 0 || s.chapter > n => {
+            p.push(format!("short.chapter must be a chapter number from 2 to {n}"))
+        }
+        None => p.push("pick a chapter for the vertical short (\"short\": {\"chapter\", \"title\"})".into()),
+        _ => {}
+    }
+    if o.fit.reason.trim().is_empty() {
+        p.push("explain the niche fit score in fit.reason".into());
+    }
+    p
+}
+
+async fn write_outline(
+    client: &Client,
+    cfg: &Config,
+    cat: &Catalog,
+    req: &StoryRequest<'_>,
+    budget: &Budget,
+) -> AppResult<Outline> {
+    let minutes = cfg.target_duration / 60.0;
+    let speech_secs = budget.target_words as f64 / WORDS_PER_SEC;
+    let themes = cat.themes.keys().cloned().collect::<Vec<_>>().join(", ");
+    let system = format!(
+        r#"You are the showrunner of an animated YouTube channel. You plan {minutes:.0}-minute videos.
+
+{brief}
+
+## Output
+Return ONE JSON object, no prose:
+{{
+  "title": "curiosity-driven YouTube title, <= 9 words",
+  "theme": "one of: {themes}",
+  "music": "short music brief, e.g. 'wonder-filled documentary underscore, light pulse, no vocals'",
+  "description": "2-3 sentence YouTube description that promises the payoff",
+  "fit": {{"score": 1-10, "reason": "how well the topic fits the channel brief and an animated-diagram format"}},
+  "chapters": [
+    {{"name": "<= 4 words", "goal": "what the viewer understands after it",
+      "beats": ["3-5 short story beats"], "wow": "the fun fact, record or engineering marvel it lands",
+      "icon": "optional icon name", "seconds": 45}}
+  ],
+  "short": {{"chapter": 3, "title": "<= 7 word hook title for a 59-second vertical short"}}
+}}
+
+## Rules
+- fit.score: be honest. 8-10 = a mechanism to animate plus real wow facts; 1-4 = a poor fit (see the brief).
+- 5-6 chapters. "seconds" is narrated time; all chapters together ≈ {speech_secs:.0} seconds.
+- Chapter 1 is a cold open (15-30s): a jaw-dropping question, fact or scale comparison. No throat-clearing.
+- Middle chapters each explain one step of HOW it works, building on the last, and each lands one "wow"
+  with a concrete number or true-scale comparison. Relate it to things viewers know.
+- The last chapter (20-40s) is the payoff: tie the mechanism together and end on a memorable line.
+- short.chapter (1-based) is the middle chapter that best works on its own as a 45-58 second short:
+  it opens with a hook needing no context and contains the biggest wow.
+- Be factually accurate; prefer well-established facts."#,
+        brief = niche::BRIEF,
+    );
+    let mut user = user_prompt(req);
+    let mut last = Vec::new();
+    for round in 1..=MAX_ROUNDS {
+        let raw = complete(client, cfg, &system, &user, true).await?;
+        let parsed = json_body(&raw).and_then(|b| serde_json::from_str::<Outline>(b).map_err(|e| e.to_string()));
+        match parsed {
+            Ok(o) => {
+                if !req.force && o.fit.score > 0.0 && o.fit.score < cfg.min_topic_fit as f64 {
+                    return Err(AppError::BadRequest(format!(
+                        "topic doesn't fit the channel niche (scored {:.0}/10: {}). Pick another topic \
+                         (`story_animator topics` suggests some) or pass --force to make it anyway.",
+                        o.fit.score, o.fit.reason
+                    )));
+                }
+                let problems = outline_problems(&o);
+                tracing::info!(round, chapters = o.chapters.len(), problems = problems.len(), "outline draft");
+                if problems.is_empty() {
+                    return Ok(o);
+                }
+                user = repair_prompt(&user_prompt(req), &raw, &problems);
+                last = problems;
+            }
+            Err(e) => {
+                last = vec![format!("invalid outline JSON: {e}")];
+                user = repair_prompt(&user_prompt(req), &raw, &last);
+            }
+        }
+    }
+    Err(AppError::Llm(format!("could not produce a valid outline in {MAX_ROUNDS} rounds: {}", last.join("; "))))
+}
+
+// ---------------------------------------------------------------------------
+// long videos, stage 2: chapters
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct ChapterOut {
+    scenes: Vec<Scene>,
+}
+
+fn chapter_problems(scenes: &[Scene], budget: &Budget, i: usize, n: usize) -> Vec<String> {
+    let mut p = validate_scenes(scenes, budget);
+    if scenes.iter().any(|s| s.layout == "chapter") {
+        p.push("don't use the \"chapter\" layout; chapter cards are added automatically".into());
+    }
+    let middle = i > 0 && i + 1 < n;
+    if middle && !scenes.iter().any(|s| matches!(s.layout.as_str(), "fun_fact" | "scale" | "stat")) {
+        p.push("land the chapter's wow on screen with a \"fun_fact\", \"scale\" or \"stat\" scene".into());
+    }
+    if let Some(first) = scenes.first()
+        && first.is_silent()
+    {
+        p.push("the first scene must be narrated".into());
+    }
+    p
+}
+
+async fn write_chapter(
+    client: &Client,
+    cfg: &Config,
+    cat: &Catalog,
+    req: &StoryRequest<'_>,
+    outline: &Outline,
+    i: usize,
+    words: usize,
+) -> AppResult<Vec<Scene>> {
+    let n = outline.chapters.len();
+    let ch = &outline.chapters[i];
+    let budget = Budget::for_chapter(words);
+    let role = if i == 0 {
+        "This is the COLD OPEN. Scene 1 hooks within its first sentence (layout \"title\", \"stat\", \"scale\" or \
+         \"hero\"). End on a line that makes the viewer need the rest of the video."
+            .to_string()
+    } else if i + 1 == n {
+        "This is the FINAL chapter: pay off the opening hook, tie the mechanism together, and end on a short, \
+         memorable closer (layout \"title\" or \"quote\")."
+            .to_string()
+    } else {
+        format!(
+            "This is a middle chapter. Explain this step of HOW it works, relate it to something familiar, and land \
+             the wow \"{}\" on screen (fun_fact, scale or stat).",
+            ch.wow
+        )
+    };
+    let short_note = if outline.short.as_ref().is_some_and(|s| s.chapter == i + 1) {
+        "\nThis chapter is ALSO cut out as a standalone vertical short: its first scene must hook without any \
+         earlier context, and the chapter must make sense on its own."
+    } else {
+        ""
+    };
+    let silent_note = if budget.max_silent > 0 {
+        "\n## Silent visual beat (saves narration)\n\
+         You may add ONE silent scene: \"narration\": \"\" with \"hold\": 3-6, right after a big reveal, where \
+         the animation speaks for itself (a network pulsing, a mechanism running, a scale reveal). Never use it \
+         for anything that needs explaining, and never as the first scene."
+    } else {
+        ""
+    };
+    let system = format!(
+        r#"You are the head writer and director of a premium animated explainer channel. You write ONE
+chapter of a {minutes:.0}-minute video as storyboard scenes. A deterministic animation engine renders
+them, so you may ONLY use the vocabulary below.
+
+{brief}
+
+## Output
+Return ONE JSON object, no prose: {{"scenes": [ {SCENE_SCHEMA} ]}}
+
+## Timing
+- {min_s}-{max_s} scenes. Total narration {min_w}-{max_w} spoken words, aim for {tw}.
+- Each narrated scene 12-30 words (~150 words/minute).
+{silent_note}
+
+{voice}
+{VISUAL_RULES}
+- Do not use the "chapter" layout (chapter cards are added automatically).
+- Video is horizontal 16:9.
+
+{direction}
+
+{vocab}
+"#,
+        minutes = cfg.target_duration / 60.0,
+        brief = niche::BRIEF,
+        min_s = budget.min_scenes,
+        max_s = budget.max_scenes,
+        min_w = budget.min_words,
+        max_w = budget.max_words,
+        tw = budget.target_words,
+        voice = voice_direction(cfg),
+        direction = style_direction(req.style, cfg.custom_scenes, cat.latex),
+        vocab = vocabulary(cat, req.style, cfg.custom_scenes, true),
+    );
+    let plan = serde_json::to_string_pretty(&json!({
+        "title": outline.title,
+        "theme": outline.theme,
+        "chapters": outline.chapters.iter().enumerate().map(|(k, c)| json!({
+            "number": k + 1, "name": c.name, "goal": c.goal, "beats": c.beats, "wow": c.wow
+        })).collect::<Vec<_>>(),
+    }))
+    .unwrap_or_default();
+    let base = format!(
+        "Topic: {topic}\n{audience}Video plan:\n{plan}\n\nWrite chapter {num} of {n}: \"{name}\".\nGoal: {goal}\n\
+         Beats: {beats}\n{role}{short_note}\nUse theme \"{theme}\". Don't repeat what other chapters cover. \
+         Write the JSON now.",
+        topic = req.topic.trim(),
+        audience = req.audience.map(|a| format!("Audience: {a}\n")).unwrap_or_default(),
+        num = i + 1,
+        name = ch.name,
+        goal = ch.goal,
+        beats = ch.beats.join(" | "),
+        theme = outline.theme,
+    );
+
+    let mut user = base.clone();
+    let mut last = Vec::new();
+    let mut best: Option<(usize, Vec<Scene>)> = None;
+    for round in 1..=MAX_ROUNDS {
+        let raw = complete(client, cfg, &system, &user, true).await?;
+        let parsed = json_body(&raw).and_then(|b| serde_json::from_str::<ChapterOut>(b).map_err(|e| e.to_string()));
+        match parsed {
+            Ok(mut out) => {
+                normalize_scenes(&mut out.scenes, cat);
+                let problems = chapter_problems(&out.scenes, &budget, i, n);
+                let w: usize = out.scenes.iter().map(|s| word_count(&s.narration)).sum();
+                tracing::info!(chapter = i + 1, round, words = w, scenes = out.scenes.len(),
+                               problems = problems.len(), "chapter draft");
+                if problems.is_empty() {
+                    return Ok(out.scenes);
+                }
+                if best.as_ref().is_none_or(|(k, _)| problems.len() < *k) {
+                    best = Some((problems.len(), out.scenes));
+                }
+                user = repair_prompt(&base, &raw, &problems);
+                last = problems;
+            }
+            Err(e) => {
+                last = vec![format!("invalid chapter JSON: {e}")];
+                user = repair_prompt(&base, &raw, &last);
+            }
+        }
+    }
+    if let Some((_, scenes)) = best {
+        let w: usize = scenes.iter().map(|s| word_count(&s.narration)).sum();
+        if !scenes.is_empty() && w >= budget.min_words * 80 / 100 && w <= budget.max_words * 115 / 100 {
+            tracing::warn!(chapter = i + 1, problems = ?last, "using best-effort chapter");
+            return Ok(scenes);
+        }
+    }
+    Err(AppError::Llm(format!("chapter {} failed after {MAX_ROUNDS} rounds: {}", i + 1, last.join("; "))))
+}
+
+/// Join chapters into one storyboard, with a silent card before every chapter
+/// after the cold open, and mark the scenes that make the short.
+fn assemble(outline: &Outline, chapters: Vec<Vec<Scene>>) -> Storyboard {
+    let numbered = chapters.len().saturating_sub(1);
+    let mut scenes = Vec::new();
+    let mut short = None;
+    for (i, chapter_scenes) in chapters.into_iter().enumerate() {
+        let plan = &outline.chapters[i];
+        if i > 0 {
+            scenes.push(Scene {
+                narration: String::new(),
+                layout: "chapter".into(),
+                title: None,
+                background: "glow".into(),
+                camera: "push_in".into(),
+                transition: "fadeblack".into(),
+                hold: Some(CHAPTER_CARD_SECS),
+                chapter: Some(i),
+                content: json!({ "number": i, "total": numbered, "name": plan.name, "icon": plan.icon }),
+            });
+        }
+        let from = scenes.len();
+        for mut s in chapter_scenes {
+            s.chapter = Some(i);
+            scenes.push(s);
+        }
+        if let Some(sp) = outline.short.as_ref().filter(|sp| sp.chapter == i + 1)
+            && scenes.len() > from
+        {
+            short = Some(ShortPick { from, to: scenes.len() - 1, title: sp.title.clone() });
+        }
+    }
+    Storyboard {
+        title: outline.title.clone(),
+        theme: if outline.theme.is_empty() { "blueprint".into() } else { outline.theme.clone() },
+        music: outline.music.clone(),
+        description: outline.description.clone(),
+        chapters: outline.chapters.iter().map(|c| c.name.clone()).collect(),
+        short,
+        scenes,
+    }
 }
 
 /// Inputs for writing one `custom` scene's code.
@@ -310,7 +755,7 @@ fn extract_python(s: &str) -> Option<String> {
     s.contains("def build").then(|| s.trim().to_string())
 }
 
-async fn complete(client: &Client, cfg: &Config, system: &str, user: &str, json_mode: bool) -> AppResult<String> {
+pub(crate) async fn complete(client: &Client, cfg: &Config, system: &str, user: &str, json_mode: bool) -> AppResult<String> {
     let order: Vec<LlmProvider> = match cfg.llm_provider {
         LlmProvider::Gemini => vec![LlmProvider::Gemini],
         LlmProvider::DeepSeek => vec![LlmProvider::DeepSeek],

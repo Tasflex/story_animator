@@ -96,7 +96,11 @@ impl VisualStyle {
 pub enum MusicSource {
     None,
     File(PathBuf),
+    /// Generate a track per video with ElevenLabs Music.
     ElevenLabs,
+    /// Pick a track per video from a folder (assets/music by default);
+    /// `story_animator music` fills it once.
+    Library(PathBuf),
 }
 
 #[derive(Clone, Debug)]
@@ -120,6 +124,12 @@ pub struct Config {
     pub music_volume: f64,
 
     pub target_duration: f64,
+    /// Also cut a vertical short from every landscape video.
+    pub shorts: bool,
+    /// Upper bound for the short's length (YouTube Shorts: under 60s).
+    pub short_max_secs: f64,
+    /// Topics scoring below this niche fit (1-10) are refused unless forced.
+    pub min_topic_fit: u32,
     pub transition_secs: f64,
     pub max_tempo: f64,
     pub aspect: Aspect,
@@ -207,11 +217,13 @@ impl Config {
             o => return Err(AppError::Config(format!("TTS_PROVIDER must be elevenlabs|silent, got {o:?}"))),
         };
         let music = match var("BACKGROUND_MUSIC") {
-            None => MusicSource::None,
+            None => MusicSource::Library(root.join("assets").join("music")),
             Some(v) if v.eq_ignore_ascii_case("none") => MusicSource::None,
             Some(v) if v.eq_ignore_ascii_case("elevenlabs") || v.eq_ignore_ascii_case("generate") => {
                 MusicSource::ElevenLabs
             }
+            Some(v) if v.eq_ignore_ascii_case("library") => MusicSource::Library(root.join("assets").join("music")),
+            Some(v) if root.join(&v).is_dir() => MusicSource::Library(root.join(&v)),
             Some(v) => {
                 let p = root.join(&v);
                 if !p.exists() {
@@ -232,12 +244,15 @@ impl Config {
             deepseek_model: var_or("DEEPSEEK_MODEL", "deepseek-chat"),
             tts_provider,
             elevenlabs_api_key: var("ELEVENLABS_API_KEY"),
-            elevenlabs_model: var_or("ELEVENLABS_MODEL", "eleven_multilingual_v2"),
+            elevenlabs_model: var_or("ELEVENLABS_MODEL", "eleven_v4"),
             elevenlabs_voice_id: var("ELEVENLABS_VOICE_ID"),
             tts_concurrency: parse("TTS_CONCURRENCY", 3usize)?.max(1),
             music,
-            music_volume: parse("MUSIC_VOLUME", 0.14f64)?,
-            target_duration: parse("TARGET_DURATION_SECS", 60.0f64)?,
+            music_volume: parse("MUSIC_VOLUME", 0.07f64)?,
+            target_duration: parse("TARGET_DURATION_SECS", 300.0f64)?,
+            shorts: flag("SHORTS", true),
+            short_max_secs: parse("SHORT_MAX_SECS", 59.0f64)?,
+            min_topic_fit: parse("MIN_TOPIC_FIT", 6u32)?.min(10),
             transition_secs: parse("TRANSITION_SECS", 0.5f64)?,
             max_tempo: parse("MAX_SPEECH_TEMPO", 1.15f64)?,
             aspect: Aspect::parse(&var_or("ASPECT", "landscape"))?,
@@ -273,10 +288,19 @@ impl Config {
         if !(1.0..=1.3).contains(&self.max_tempo) {
             return Err(AppError::Config("MAX_SPEECH_TEMPO must be between 1.0 and 1.3".into()));
         }
+        if !(15.0..=60.0).contains(&self.short_max_secs) {
+            return Err(AppError::Config("SHORT_MAX_SECS must be between 15 and 60".into()));
+        }
         if !(0.0..=1.0).contains(&self.music_volume) {
             return Err(AppError::Config("MUSIC_VOLUME must be between 0 and 1".into()));
         }
         Ok(())
+    }
+
+    /// Whether the TTS model understands inline audio tags like `[excited]`.
+    pub fn tts_supports_tags(&self) -> bool {
+        let m = self.elevenlabs_model.as_str();
+        m.starts_with("eleven_v3") || m.starts_with("eleven_v4") || m.starts_with("eleven_v5")
     }
 
     pub fn has_llm(&self) -> bool {

@@ -73,13 +73,15 @@ pub async fn synthesize(
     out: &Path,
 ) -> AppResult<Vec<Word>> {
     let url = format!("{API}/text-to-speech/{voice_id}/with-timestamps?output_format=mp3_44100_128");
+    // Audio-tag models (v3/v4) need room to act: lower stability, more style.
+    let (stability, style) = if cfg.tts_supports_tags() { (0.4, 0.35) } else { (0.45, 0.25) };
     let mut body = json!({
         "text": text,
         "model_id": cfg.elevenlabs_model,
         "voice_settings": {
-            "stability": 0.45,
+            "stability": stability,
             "similarity_boost": 0.8,
-            "style": 0.25,
+            "style": style,
             "use_speaker_boost": true,
             "speed": 1.0
         }
@@ -136,6 +138,8 @@ pub async fn synthesize(
     unreachable!("loop returns on final attempt")
 }
 
+/// Group character timings into words. Audio tags (`[excited]`) appear in the
+/// alignment like text but are never spoken, so they are dropped.
 fn words_from_alignment(a: &Value) -> Vec<Word> {
     let chars = a["characters"].as_array().cloned().unwrap_or_default();
     let starts = a["character_start_times_seconds"].as_array().cloned().unwrap_or_default();
@@ -143,9 +147,19 @@ fn words_from_alignment(a: &Value) -> Vec<Word> {
     let mut words = Vec::new();
     let mut cur = String::new();
     let (mut ws, mut we) = (0.0, 0.0);
+    let mut in_tag = 0usize;
     for i in 0..chars.len().min(starts.len()).min(ends.len()) {
         let ch = chars[i].as_str().unwrap_or("");
         let (s, e) = (starts[i].as_f64().unwrap_or(0.0), ends[i].as_f64().unwrap_or(0.0));
+        if ch == "[" {
+            in_tag += 1;
+        }
+        if in_tag > 0 {
+            if ch == "]" {
+                in_tag -= 1;
+            }
+            continue;
+        }
         if ch.trim().is_empty() {
             if !cur.is_empty() {
                 words.push(Word { w: std::mem::take(&mut cur), s: ws, e: we });
@@ -168,7 +182,7 @@ fn words_from_alignment(a: &Value) -> Vec<Word> {
 pub fn estimate_words(text: &str) -> (Vec<Word>, f64) {
     let mut t = 0.1;
     let mut out = Vec::new();
-    for w in text.split_whitespace() {
+    for w in crate::storyboard::spoken(text).split_whitespace() {
         let letters = w.chars().filter(|c| c.is_alphanumeric()).count() as f64;
         let d = 0.1 + 0.05 * letters;
         out.push(Word { w: w.to_string(), s: t, e: t + d });
@@ -226,6 +240,18 @@ mod tests {
         assert_eq!(w[0], Word { w: "Hi,".into(), s: 0.0, e: 0.25 });
         assert_eq!(w[1].w, "you.");
         assert!((w[1].s - 0.3).abs() < 1e-9 && (w[1].e - 0.7).abs() < 1e-9);
+    }
+
+    #[test]
+    fn drops_audio_tags_from_alignment() {
+        let text = "[excited] Hi you";
+        let chars: Vec<String> = text.chars().map(|c| c.to_string()).collect();
+        let starts: Vec<f64> = (0..chars.len()).map(|i| i as f64 * 0.01).collect();
+        let ends: Vec<f64> = starts.iter().map(|s| s + 0.01).collect();
+        let w = words_from_alignment(&json!({
+            "characters": chars, "character_start_times_seconds": starts, "character_end_times_seconds": ends
+        }));
+        assert_eq!(w.iter().map(|w| w.w.as_str()).collect::<Vec<_>>(), ["Hi", "you"]);
     }
 
     #[test]

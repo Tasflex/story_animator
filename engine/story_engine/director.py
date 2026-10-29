@@ -43,12 +43,13 @@ from .icons import build_icon
 from .stage import Stage, make_text
 from .theme import Theme, get_theme, set_font
 
-CUE_LEAD = 0.12
+CUE_LEAD = 0.12  # visuals land a hair before the word — feels "on beat"
+FIRST_REVEAL_MAX = 0.9  # seconds after narration starts by which something must be on screen
 
 
 @lru_cache(maxsize=1)
 def latex_available() -> bool:
-    return bool(shutil.which("latex") and shutil.which("dvisvgm"))  # visuals land a hair before the word — feels "on beat"
+    return bool(shutil.which("latex") and shutil.which("dvisvgm"))
 
 
 @dataclass
@@ -123,10 +124,18 @@ class Ctx:
                     return max(0.0, self.words[i]["s"] - CUE_LEAD)
         return fallback
 
+    @property
+    def first_by(self) -> float:
+        """Latest time the first element of a scene may appear. Cue words often come
+        mid-sentence; waiting for them leaves an empty frame, so the first reveal is
+        pulled forward to shortly after the narration starts."""
+        return self.narr_start + FIRST_REVEAL_MAX
+
     def schedule(self, cues: list, start: float | None = None, end: float | None = None,
                  min_gap: float = 0.55) -> list[float]:
         """Times for a sequence of reveals. Uses cues where found, interpolates the
-        rest, and guarantees increasing times inside [start, end]."""
+        rest, and guarantees increasing times inside [start, end]. The first reveal
+        never waits past `first_by`."""
         n = len(cues)
         if n == 0:
             return []
@@ -167,6 +176,8 @@ class Ctx:
             first = res[0]
             scale = span / max(res[-1] - first, 1e-6)
             res = [first + (t - first) * scale for t in res]
+        if res:
+            res[0] = min(res[0], max(self.first_by, start - 0.2))
         return [max(0.0, t) for t in res]
 
     def at(self, t: float | None, make: Callable[[], list[Animation] | Animation], run_time: float = 0.8):
@@ -240,7 +251,7 @@ class SpecScene(MovingCameraScene):
         self._camera_motion(str(scene.get("camera", "drift")), duration)
 
         layout = str(scene.get("layout", "hero")).lower()
-        if layout not in ("title", "quote") and scene.get("title"):
+        if layout not in ("title", "quote", "chapter", "fun_fact") and scene.get("title"):
             self._scene_title(ctx, str(scene["title"]))
 
         builder = LAYOUTS.get(layout, LAYOUTS["hero"])

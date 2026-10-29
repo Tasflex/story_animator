@@ -33,6 +33,7 @@ pub fn router(app: AppState) -> Router {
         .route("/api/videos", post(create_video).get(list_videos))
         .route("/api/videos/:id", get(get_video))
         .route("/api/videos/:id/video", get(download_video))
+        .route("/api/videos/:id/short", get(download_short))
         .route("/api/videos/:id/storyboard", get(get_storyboard))
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .layer(CorsLayer::permissive())
@@ -69,6 +70,8 @@ struct StoryboardReq {
     aspect: Option<String>,
     #[serde(default)]
     style: Option<String>,
+    #[serde(default)]
+    force: bool,
 }
 
 async fn storyboard(State(c): State<Ctx>, Json(r): Json<StoryboardReq>) -> AppResult<Json<Value>> {
@@ -88,6 +91,8 @@ async fn storyboard(State(c): State<Ctx>, Json(r): Json<StoryboardReq>) -> AppRe
             audience: r.audience.as_deref(),
             portrait,
             style,
+            word_scale: 1.0,
+            force: r.force,
         },
     )
     .await?;
@@ -117,17 +122,25 @@ async fn get_video(State(c): State<Ctx>, Path(id): Path<String>) -> AppResult<Js
 }
 
 async fn download_video(State(c): State<Ctx>, Path(id): Path<String>) -> AppResult<Response> {
-    validate_run_id(&id)?;
-    let path = crate::pipeline::run_dir(&c.app.cfg, &id).join("final.mp4");
+    send_mp4(&c, &id, "final.mp4", &format!("{id}.mp4")).await
+}
+
+async fn download_short(State(c): State<Ctx>, Path(id): Path<String>) -> AppResult<Response> {
+    send_mp4(&c, &id, "short.mp4", &format!("{id}_short.mp4")).await
+}
+
+async fn send_mp4(c: &Ctx, id: &str, file_name: &str, download_name: &str) -> AppResult<Response> {
+    validate_run_id(id)?;
+    let path = crate::pipeline::run_dir(&c.app.cfg, id).join(file_name);
     let file = tokio::fs::File::open(&path)
         .await
-        .map_err(|_| AppError::NotFound(format!("video for {id} (not finished?)")))?;
+        .map_err(|_| AppError::NotFound(format!("{file_name} for {id} (not finished?)")))?;
     let len = file.metadata().await?.len();
     let body = Body::from_stream(tokio_util::io::ReaderStream::new(file));
     Ok(Response::builder()
         .header(header::CONTENT_TYPE, "video/mp4")
         .header(header::CONTENT_LENGTH, len)
-        .header(header::CONTENT_DISPOSITION, format!("inline; filename=\"{id}.mp4\""))
+        .header(header::CONTENT_DISPOSITION, format!("inline; filename=\"{download_name}\""))
         .body(body)
         .expect("valid response"))
 }

@@ -360,7 +360,7 @@ def layout_compare(ctx: Ctx):
     vs = VGroup(vs_c, ctx.text("VS", size=32, weight="BOLD", color=th.bg)).move_to(
         (panels[0].get_center() + panels[1].get_center()) / 2)
 
-    t_left = ctx.cue(_cue_of(sides[0], "label"), None) or ctx.narr_start + 0.1
+    t_left = min(ctx.cue(_cue_of(sides[0], "label"), None) or ctx.narr_start + 0.1, ctx.first_by)
     t_right = ctx.cue(_cue_of(sides[1], "label"), None, after=t_left + 0.4)
     if t_right is None:
         t_right = t_left + max((ctx.narr_end - t_left) * 0.45, 1.2)
@@ -932,11 +932,15 @@ LAYOUT_DOCS = {
     },
 }
 
-# Diagram layouts (3Blue1Brown-style) and LLM-written custom scenes.
+# Diagram layouts (3Blue1Brown-style), long-form layouts (chapters, fun facts,
+# true scale) and LLM-written custom scenes.
 from .custom import CUSTOM_DOC, layout_custom  # noqa: E402
 from .diagrams import DIAGRAM_DOCS, DIAGRAM_LAYOUTS  # noqa: E402
+from .marvels import MARVEL_DOCS, MARVEL_LAYOUTS  # noqa: E402
 
 LAYOUTS.update(DIAGRAM_LAYOUTS)
+LAYOUTS.update(MARVEL_LAYOUTS)
 LAYOUTS["custom"] = layout_custom
 LAYOUT_DOCS.update(DIAGRAM_DOCS)
+LAYOUT_DOCS.update(MARVEL_DOCS)
 LAYOUT_DOCS["custom"] = CUSTOM_DOC

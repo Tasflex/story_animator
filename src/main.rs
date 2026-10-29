@@ -1,11 +1,13 @@
-//! Story Animator — topic in, polished 60-second 2D animated video out.
+//! Story Animator — topic in, a five-minute 2D animated explainer (16:9) and
+//! a vertical short (9:16) out.
 //!
 //! Architecture (see docs/ARCHITECTURE.md):
-//!   llm        writes a JSON storyboard from the engine's visual vocabulary
-//!   tts        narrates each scene with word-level timestamps
+//!   niche      what the channel covers; topic ideas and the fit check
+//!   llm        writes a chaptered JSON storyboard from the engine's vocabulary
+//!   tts        narrates each scene with word-level timestamps (audio tags for emotion)
 //!   timeline   fits scenes into exactly TARGET_DURATION_SECS
 //!   render     renders scenes in parallel with the Python engine (engine/)
-//!   media      crossfades, mixes audio, burns captions with ffmpeg
+//!   media      crossfades, mixes audio, burns captions, cuts the short with ffmpeg
 
 mod catalog;
 mod config;
@@ -15,6 +17,7 @@ mod error;
 mod jobs;
 mod llm;
 mod media;
+mod niche;
 mod pipeline;
 mod render;
 mod server;
@@ -36,7 +39,7 @@ use crate::pipeline::{AppState, Progress, VideoRequest};
 use crate::storyboard::Storyboard;
 
 #[derive(Parser)]
-#[command(name = "story_animator", version, about = "Topic in, polished 60-second 2D animated video out.")]
+#[command(name = "story_animator", version, about = "Topic in: a five-minute animated explainer plus a vertical short out.")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -62,6 +65,25 @@ enum Cmd {
         /// diagram (3Blue1Brown-like, default) | infographic (flat icons)
         #[arg(long)]
         style: Option<String>,
+        /// Write it even if the topic doesn't fit the channel niche.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Suggest video topics that fit the channel niche.
+    Topics {
+        /// How many ideas.
+        #[arg(long, short, default_value_t = 10)]
+        count: usize,
+        /// Narrow to an area, e.g. "bridges and tunnels".
+        #[arg(long)]
+        area: Option<String>,
+    },
+    /// Fill the background-music library (assets/music) with ElevenLabs Music,
+    /// once; every video then reuses a track from it.
+    Music {
+        /// Tracks to have in the library.
+        #[arg(long, short, default_value_t = 3)]
+        count: usize,
     },
     /// Re-run an earlier run, reusing everything that hasn't changed
     /// (edit storage/runs/<id>/storyboard.json first to tweak it).
@@ -112,7 +134,10 @@ struct GenerateArgs {
     /// diagram (3Blue1Brown-like, default) | infographic (flat icons and characters).
     #[arg(long)]
     style: Option<String>,
-    /// Copy the finished video here.
+    /// Make it even if the topic doesn't fit the channel niche.
+    #[arg(long)]
+    force: bool,
+    /// Copy the finished video here (the short goes next to it as <name>_short.mp4).
     #[arg(long, short)]
     out: Option<PathBuf>,
 }
@@ -161,15 +186,27 @@ fn cli_progress() -> pipeline::ProgressFn {
 
 async fn finish(result: pipeline::RunResult, out: Option<PathBuf>) -> AppResult<()> {
     let mut path = result.video.clone();
+    let mut short = result.short.clone();
     if let Some(o) = out {
         if let Some(parent) = o.parent().filter(|p| !p.as_os_str().is_empty()) {
             tokio::fs::create_dir_all(parent).await?;
         }
         tokio::fs::copy(&result.video, &o).await?;
+        if let Some(s) = &result.short {
+            let stem = o.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "video".into());
+            let so = o.with_file_name(format!("{stem}_short.mp4"));
+            tokio::fs::copy(s, &so).await?;
+            short = Some(so);
+        }
         path = o;
     }
+    let short_line = match (&short, result.short_duration) {
+        (Some(p), Some(d)) => format!("\n  short:    {}  ({d:.1}s, 1080x1920)", p.display()),
+        _ => String::new(),
+    };
+    let yt_line = result.youtube.as_ref().map(|p| format!("\n  youtube:  {}", p.display())).unwrap_or_default();
     println!(
-        "\n  \"{}\"\n  video:    {}\n  length:   {:.2}s  ({} scenes, {}x{} @ {}fps, speech {:.2}x)\n  run:      {}  (resume: story_animator resume {})\n  took:     {:.0}s",
+        "\n  \"{}\"\n  video:    {}\n  length:   {:.2}s  ({} scenes, {}x{} @ {}fps, speech {:.2}x){short_line}{yt_line}\n  run:      {}  (resume: story_animator resume {})\n  took:     {:.0}s",
         result.title,
         path.display(),
         result.duration,
@@ -184,6 +221,14 @@ async fn finish(result: pipeline::RunResult, out: Option<PathBuf>) -> AppResult<
     );
     Ok(())
 }
+
+/// Briefs for the music library: unobtrusive beds that suit engineering explainers.
+const MUSIC_BRIEFS: [(&str, &str); 4] = [
+    ("wonder", "wonder-filled documentary underscore, soft felt piano and warm strings, gentle pulse, 85 bpm, curious and hopeful"),
+    ("circuit", "modern minimal electronic underscore, soft synth arpeggios, light glitchy percussion, 100 bpm, sleek technology feel"),
+    ("scale", "airy cinematic ambient underscore, wide pads, subtle plucked motifs, slow build, 75 bpm, awe at enormous structures"),
+    ("workshop", "playful inventive underscore, pizzicato strings, marimba and light claps, 95 bpm, clever engineering tricks"),
+];
 
 async fn dispatch(cli: Cli, cfg: Config) -> AppResult<()> {
     match cli.cmd {
@@ -209,14 +254,54 @@ async fn dispatch(cli: Cli, cfg: Config) -> AppResult<()> {
             println!("backgrounds: {}", st.catalog.backgrounds.keys().cloned().collect::<Vec<_>>().join(", "));
             Ok(())
         }
-        Cmd::Storyboard { topic, out, theme, audience, portrait, style } => {
+        Cmd::Topics { count, area } => {
+            let client = reqwest::Client::builder().timeout(Duration::from_secs(300)).build()?;
+            let ideas = niche::suggest_topics(&client, &cfg, count, area.as_deref()).await?;
+            for (i, t) in ideas.iter().enumerate() {
+                println!("\n{:>2}. {}\n    hook: {}\n    why:  {}", i + 1, t.topic, t.hook, t.why);
+                for w in &t.wow {
+                    println!("    wow:  {w}");
+                }
+            }
+            println!("\nMake one:  story_animator generate \"<topic>\"");
+            Ok(())
+        }
+        Cmd::Music { count } => {
+            let lib = match &cfg.music {
+                config::MusicSource::Library(p) => p.clone(),
+                _ => cfg.root.join("assets").join("music"),
+            };
+            tokio::fs::create_dir_all(&lib).await?;
+            let client = reqwest::Client::builder().timeout(Duration::from_secs(600)).build()?;
+            let secs = cfg.target_duration + 4.0;
+            for (k, (name, brief)) in MUSIC_BRIEFS.iter().take(count.clamp(1, MUSIC_BRIEFS.len())).enumerate() {
+                let out = lib.join(format!("{:02}_{name}.mp3", k + 1));
+                if out.exists() {
+                    println!("have     {}", out.display());
+                    continue;
+                }
+                println!("making   {} ({secs:.0}s) ...", out.display());
+                tts::generate_music(&client, &cfg, brief, secs, &out).await?;
+            }
+            println!("music library: {} track(s) in {}", pipeline::music_tracks(&lib).await.len(), lib.display());
+            Ok(())
+        }
+        Cmd::Storyboard { topic, out, theme, audience, portrait, style, force } => {
             let style = style.as_deref().map(config::VisualStyle::parse).transpose()?.unwrap_or(cfg.style);
             let st = state(cfg).await?;
             let sb = llm::write_storyboard(
                 &st.client,
                 &st.cfg,
                 &st.catalog,
-                &llm::StoryRequest { topic: &topic, theme: theme.as_deref(), audience: audience.as_deref(), portrait, style },
+                &llm::StoryRequest {
+                    topic: &topic,
+                    theme: theme.as_deref(),
+                    audience: audience.as_deref(),
+                    portrait,
+                    style,
+                    word_scale: 1.0,
+                    force,
+                },
             )
             .await?;
             let text = serde_json::to_string_pretty(&sb)?;
@@ -254,6 +339,7 @@ async fn dispatch(cli: Cli, cfg: Config) -> AppResult<()> {
                 silent: a.silent.then_some(true),
                 music: a.no_music.then_some(false),
                 style: a.style,
+                force: a.force.then_some(true),
             };
             let st = state(cfg).await?;
             let run_id = uuid::Uuid::new_v4().simple().to_string();
