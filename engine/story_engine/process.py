@@ -182,6 +182,19 @@ def layout_process(ctx: Ctx):
     grow = min(room_w / max(machine.width, 1e-3), room_h / max(machine.height, 1e-3), 2.2)
     machine.scale(grow)
     machine.move_to(cc + DOWN * (0.25 if has_labels else 0.0) + DOWN * 0.1)
+    # Parts placed too close (e.g. rows 0, 0.5, 1 in one column) shrink until they stop overlapping.
+    plist = list(parts.values())
+    for _ in range(5):
+        clash = False
+        for a_i in range(len(plist)):
+            for b_i in range(a_i + 1, len(plist)):
+                A, B = plist[a_i].mob, plist[b_i].mob
+                if _hits(A, [B], margin=-0.08):
+                    A.scale(0.85)
+                    B.scale(0.85)
+                    clash = True
+        if not clash:
+            break
     # Meshed gears must touch: slide each driven gear against its driver so the teeth interlock.
     for ln in links_spec.values():
         if str(ln.get("kind", "")).lower() != "mesh":
