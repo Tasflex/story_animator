@@ -12,6 +12,7 @@ Total clip length is guaranteed: the director always pads/clamps to
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import random
 import re
@@ -28,6 +29,7 @@ from manim import (
     RIGHT,
     UP,
     Animation,
+    AnimationGroup,
     Create,
     Line,
     FadeIn,
@@ -233,17 +235,25 @@ class Ctx:
     def pin_to_frame(self, m):
         """Keep `m` fixed on screen while the camera moves or zooms (headings, notes).
         `m` must be laid out for the full, unzoomed frame; it is moved to the
-        camera's current view straight away and follows it from then on."""
+        camera's current view straight away and follows it from then on.
+
+        The size is set absolutely every frame (from the size it was laid out
+        at), not by increments: an animation on `m` (a FadeIn) restores the
+        geometry it captured when it began, and an incremental pin would never
+        notice that it had been undone."""
+        if getattr(m, "_pinned", False):
+            return m
+        m._pinned = True
         frame = self.scene.camera.frame
         w0 = self.stage.width
         off = m.get_center().copy()
-        state = {"s": 1.0}
+        base = max(m.width, m.height)
 
         def upd(mob):
             s = frame.width / w0
-            if abs(s - state["s"]) > 1e-6:
-                mob.scale(s / state["s"])
-                state["s"] = s
+            cur = max(mob.width, mob.height)
+            if base > 1e-6 and cur > 1e-6 and abs(cur - base * s) > 1e-4 * base:
+                mob.scale(base * s / cur)
             mob.move_to(frame.get_center() + off * s)
         upd(m)
         m.add_updater(upd)
@@ -259,8 +269,7 @@ class SpecScene(MovingCameraScene):
         from .layouts import LAYOUTS, layout_title
 
         spec = self.spec
-        w, h = int(spec.get("width", 1920)), int(spec.get("height", 1080))
-        stage = Stage.for_pixels(w, h)
+        stage = Stage.for_spec(spec)
         theme = get_theme(spec.get("theme"))
         duration = float(spec["duration"])
         content_end = float(spec.get("content_end", duration))
@@ -303,7 +312,40 @@ class SpecScene(MovingCameraScene):
             else:
                 layout_title(ctx)
 
+        self._frame_bands(ctx)
         self._run_beats(ctx)
+
+    # --- reserved bands -----------------------------------------------------
+    def _frame_bands(self, ctx: Ctx):
+        """A frame with a reserved top band (the short) gets a header under the
+        burned-in hook title and a footer under the captions, pinned over
+        everything: a diagram the camera zooms into slides behind them instead
+        of under the text."""
+        st, th = ctx.stage, ctx.theme
+        if not st.top_band:
+            return
+        w = st.width + 0.4
+        bands = VGroup()
+
+        def strip(y_top, y_bottom, opacity):
+            h = max(y_top - y_bottom, 1e-3)
+            return Rectangle(width=w, height=h, stroke_width=0, fill_color=th.bg,
+                             fill_opacity=opacity).move_to([0, (y_top + y_bottom) / 2, 0])
+
+        solid, steps = 1.0, 8
+        bands.add(strip(st.height / 2 + 0.1, st.top, solid))
+        fade = 0.25
+        for k in range(steps):  # soft lower edge
+            y0 = st.top - fade * k / steps
+            bands.add(strip(y0, y0 - fade / steps, solid * (1 - (k + 1) / (steps + 1))))
+        foot, rise = 0.9, 0.6
+        for k in range(steps):  # captions sit on a darkened footer that fades in above them
+            y0 = st.caption_top + 0.15 - rise * k / steps
+            bands.add(strip(y0, y0 - rise / steps, foot * (k + 1) / (steps + 1)))
+        bands.add(strip(st.caption_top + 0.15 - rise, -st.height / 2 - 0.1, foot))
+        bands.set_z_index(40)
+        ctx.pin_to_frame(bands)
+        self.add(bands)
 
     # --- camera -----------------------------------------------------------
     def _camera_motion(self, kind: str, duration: float):
@@ -350,7 +392,7 @@ class SpecScene(MovingCameraScene):
                 t.shift(DOWN * (t.height - 0.8) / 2)
             rule = Line(t.get_corner(DOWN + LEFT), t.get_corner(DOWN + RIGHT), stroke_color=ctx.theme.accent,
                         stroke_width=2.5).shift(DOWN * 0.14)
-            ctx.title_mob = VGroup(t, rule)
+            self._set_title(ctx, VGroup(t, rule))
             ctx.at(0.15, lambda: [FadeIn(t, shift=DOWN * 0.15), Create(rule)], 0.8)
             return
         t = ctx.text(title, size=50 if not st.portrait else 46, weight="BOLD",
@@ -360,8 +402,21 @@ class SpecScene(MovingCameraScene):
             t.shift(DOWN * (t.height - 0.8) / 2)
         bar = Rectangle(width=0.9, height=0.07, stroke_width=0, fill_color=ctx.theme.accent, fill_opacity=1)
         bar.next_to(t, DOWN, buff=0.18)
-        ctx.title_mob = VGroup(t, bar)
+        self._set_title(ctx, VGroup(t, bar))
         ctx.at(0.15, lambda: [FadeIn(t, shift=DOWN * 0.25), GrowFromCenter(bar)], 0.7)
+
+    @staticmethod
+    def _set_title(ctx: Ctx, head: VGroup):
+        """Register the heading. A heading that wraps to two lines grows downward, so
+        the content box starts that much lower; in the short the heading is pinned to
+        the frame like the bands around it."""
+        ctx.title_mob = head
+        extra = max(0.0, (ctx.stage.title_y - 0.4) - head.get_bottom()[1] - 0.15)
+        if extra > 0.01:
+            ctx.stage = dataclasses.replace(ctx.stage, title_extra=extra)
+        if ctx.stage.top_band:
+            for m in head:  # the children: they are what gets added to the scene
+                ctx.pin_to_frame(m)
 
     # --- scheduler --------------------------------------------------------
     def _run_beats(self, ctx: Ctx):
@@ -382,7 +437,9 @@ class SpecScene(MovingCameraScene):
             # don't let a long animation swallow the next beat, but keep motion readable
             if next_t > now:
                 rt = min(rt, max(next_t - now, 0.35))
-            anims = [a for a in beat.make() if a is not None]
+            # An empty group (e.g. a LaggedStart over a blank heading) can't be played; skip it.
+            anims = [a for a in beat.make()
+                     if a is not None and not (isinstance(a, AnimationGroup) and not a.animations)]
             if anims:
                 self.play(*anims, run_time=max(rt, frame * 2))
         rest = end - self.renderer.time

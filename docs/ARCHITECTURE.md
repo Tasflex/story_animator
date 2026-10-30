@@ -85,8 +85,8 @@ one scene, never the whole video.
                        ├──────────────────────────────┐
                        ▼                              ▼
                 ┌──────────────┐               ┌──────────────┐
-                │ 7 YouTube    │ burn captions │ 8 short      │ segment → 9:16 reframe,
-                └──────┬───────┘               └──────┬───────┘ title + vertical captions
+                │ 7 YouTube    │ burn captions │ 8 short      │ segment → scenes re-rendered
+                └──────┬───────┘               └──────┬───────┘ in 9:16 → title + captions
                        ▼                              ▼
                    final.mp4 (16:9, 5:00)         short.mp4 (9:16, ≤ 59s)   + youtube.txt
 ```
@@ -232,37 +232,48 @@ starts at `start_i`. So the output length is:
 Narration clips are placed with `adelay` at `start_i + lead_i`, so audio
 and visuals never drift. Unit tests in `timeline.rs` lock this in.
 
-## One render, two formats
+## Two formats, both rendered for their frame
 
-The scenes are composited once into `master.mp4`: no captions,
-near-lossless (CRF 14). Both deliverables are cut from it:
+The 16:9 scenes are composited once into `master.mp4`: no captions,
+near-lossless (CRF 14).
 
 - **YouTube (16:9)**: the master with word-highlight captions burned in.
 - **Short (9:16)**: `pipeline::short_segment` takes the storyboard's short
   range, drops leading/trailing silent scenes, trims whole scenes from the
   end until it fits `SHORT_MAX_SECS` (59s), and extends with following
-  scenes if it's under 40s. The cut starts 0.2s into the first scene to
-  skip the crossfade tail. In the 1080x1920 frame:
+  scenes if it's under 40s. Those scenes are then **rendered again in
+  9:16** (`pipeline::make_short`): the same specs (narration word timings,
+  seed, process-chain state) at 1080x1920, so every layout arranges itself
+  for a portrait frame and fills it. Nothing is cropped from the landscape
+  video and nothing sits on a blurred fill. Custom scenes get their own
+  portrait code. The clips are composed with the cached narration and the
+  music on the short's own timeline (`<run>/short/`), then captioned:
 
   ```
     0 ┌──────────────┐
-      │  hook title  │  short's title (ASS, wraps)
-  600 ├══════════════┤  accent hairline
-      │  landscape   │  master, bottom 12% (the empty caption band) cropped,
-      │  video       │  scaled to the full 1080 width
- 1134 ├══════════════┤  accent hairline
-      │  captions    │  vertical word-highlight captions, re-timed to the cut
-      │              │
+      │  hook title  │  short's title in a translucent box, sized to fit two lines
+  340 ├──────────────┤  header band: the spec's "reserve.top"; layouts stay below Stage.top
+      │  scene title │
+      │              │  the scene, laid out natively for 9:16
+      │  animation   │
+ 1380 ├──────────────┤  Stage.caption_top: a darkened footer starts here
+      │  captions    │  big word-highlight captions, re-timed to the short
       │  CTA         │  "Full video on the channel" for the last 3.5s
+ 1640 │              │  the bottom stays clear for the Shorts player overlay
  1920 └──────────────┘
   ```
 
-  The rest of the frame is a blurred, darkened copy of the same video.
-  Audio fades in and out at the cut.
+  The header band and the caption footer are drawn by the engine
+  (`SpecScene._frame_bands`) and pinned to the camera above everything
+  else, so when a `process` scene zooms in on a part, the diagram slides
+  *behind* them instead of under the title or the captions. Scene headings
+  are pinned to the frame too. Audio and picture fade in and out.
 
-Layouts reserve the bottom band of the landscape frame for captions, which
-is why the master can be captioned for YouTube and reframed for the short
-without anything colliding.
+  The short costs render time (a handful of extra scenes) but no TTS, since
+  its narration is the long video's.
+
+Layouts reserve the bottom band of the frame for captions in both
+orientations, which is why captions never collide with the animation.
 
 ## Background music
 
@@ -301,7 +312,7 @@ The clip is always padded or clamped to the exact spec duration.
 
 ```
 src/
-  main.rs        CLI (generate, storyboard, topics, kit, music, resume, serve, doctor, catalog)
+  main.rs        CLI (generate, storyboard, topics, kit, music, resume, review, improve, package, revise, feedback, serve, doctor, catalog)
   config.rs      .env → Config (all knobs, defaults, validation)
   catalog.rs     loads the engine's vocabulary (single source of truth)
   niche.rs       the channel brief + topic ideas
@@ -313,8 +324,13 @@ src/
   subtitles.rs   ASS captions with word highlight, long and short layouts (unit-tested)
   custom.rs      LLM-written custom scenes: generate, validate, retry, cache
   render.rs      parallel engine processes, resume, fallback
-  media.rs       ffmpeg/ffprobe helpers, master compositor, caption burn, short reframe
-  pipeline.rs    the end-to-end run, run directory, caching, short segment, youtube.txt
+  media.rs       ffmpeg/ffprobe helpers, master compositor, caption burn, short captioning
+  pipeline.rs    the end-to-end run, run directory, caching, the native 9:16 short, youtube.txt
+  review.rs      self-review of the video and the short against the scorecard (LEARNING.md)
+  lessons.rs     storage/LESSONS.md: lessons, what works, scorecard
+  improve.rs     fix a video that scores below the best so far; keep it only if it scores higher
+  revise.rs      change requests: rewrite the scenes they touch, resume
+  package.rs     title, description, tags, thumbnail
   jobs.rs        background job queue for the API
   server.rs      axum HTTP API
   doctor.rs      environment checks
@@ -351,9 +367,13 @@ storage/runs/<run_id>/
   master.filtergraph.txt      the exact ffmpeg graph (handy for debugging)
   subtitles.ass       captions for the long video
   final.mp4           16:9 YouTube video
+  short/              the short: scenes/ (9:16 renders), timeline.json, short.json, master.mp4
   short.ass           title, captions and CTA for the short
   short.mp4           9:16 short
   short.filtergraph.txt
+  contact.png         one frame per scene (+ a SHORT row), for the self-review
+  review.json         self-review: score, vs_best, problems, lessons (LEARNING.md)
+  improve.json        auto-improvement attempts and scores
   youtube.txt         title, description, chapter timestamps, short title
   result.json
 ```

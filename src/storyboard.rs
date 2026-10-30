@@ -300,6 +300,13 @@ pub fn process_problems(scenes: &[Scene], cat: &Catalog) -> Vec<String> {
         let parts = s.content["parts"].as_array().cloned().unwrap_or_default();
         if parts.is_empty() && !continues(s) {
             problems.push(format!("scene {n} is \"process\" but has no \"parts\""));
+        } else if parts.is_empty() && known_ids.is_empty() {
+            // "continue" only joins the process scene right before it; with none (or none with
+            // parts) there is no machine to carry on, and the scene renders nothing.
+            problems.push(format!(
+                "scene {n} has \"continue\": true but no process scene with parts comes right before it; \
+                 give it its own \"parts\" (and drop \"continue\"), or draw the machine in the scene before"
+            ));
         }
         for p in &parts {
             let id = p["id"].as_str().unwrap_or("").to_string();
@@ -436,6 +443,27 @@ pub fn parse_storyboard(raw: &str) -> Result<Storyboard, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continue_needs_a_machine_before_it() {
+        let cat: Catalog = serde_json::from_value(serde_json::json!({
+            "version": "t", "layouts": {}, "icons": [], "backgrounds": {}, "themes": {}, "cameras": [],
+            "transitions": [], "poses": [], "expressions": [], "looks": [], "parts": {"tank": "", "valve": ""}
+        }))
+        .unwrap();
+        let scene = |v: serde_json::Value| -> Scene { serde_json::from_value(v).unwrap() };
+        let steps = serde_json::json!([{"cue": "water", "do": [{"on": "v"}]}]);
+        let orphan = scene(serde_json::json!({"narration": "the water flows", "layout": "process",
+                                               "content": {"continue": true, "steps": steps}}));
+        let stat = scene(serde_json::json!({"narration": "big number", "layout": "stat", "content": {}}));
+        let machine = scene(serde_json::json!({"narration": "the water flows", "layout": "process",
+            "content": {"parts": [{"id": "t", "kind": "tank"}, {"id": "v", "kind": "valve"}], "steps": steps}}));
+        // The watch video: a chain that starts with "continue" after a non-process scene.
+        let bad = process_problems(&[stat, orphan.clone()], &cat);
+        assert!(bad.iter().any(|p| p.contains("no process scene with parts")), "{bad:?}");
+        let good = process_problems(&[machine, orphan], &cat);
+        assert!(!good.iter().any(|p| p.contains("continue")), "{good:?}");
+    }
 
     #[test]
     fn budget_for_60s() {

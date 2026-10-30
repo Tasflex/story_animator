@@ -118,8 +118,7 @@ pub fn fallback_spec(spec: &Value) -> Value {
     let heading = scene["title"]
         .as_str()
         .map(str::to_string)
-        .unwrap_or_else(|| scene["narration"].as_str().unwrap_or("").split_whitespace().take(5).collect::<Vec<_>>().join(" "));
-    s["scene"]["layout"] = json!("title");
+        .unwrap_or_else(|| scene["narration"].as_str().unwrap_or("").split_whitespace().take(5).collect::<Vec<_>>().join(" "));    s["scene"]["layout"] = json!("title");
     s["scene"]["title"] = Value::Null;
     s["scene"]["content"] = json!({ "heading": heading });
     if let Some(obj) = s.as_object_mut() {

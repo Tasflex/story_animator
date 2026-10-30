@@ -144,8 +144,19 @@ The log says `storyboard picks no segment for a short` when it's missing.
 **The short starts or ends awkwardly**
 The cut follows scene boundaries inside the chosen chapter, trimmed to fit
 `SHORT_MAX_SECS`. Edit `short.from`/`short.to` in
-`storage/runs/<id>/storyboard.json` and `resume`. No scene is re-rendered
-or re-narrated; only the final ffmpeg encodes run again.
+`storage/runs/<id>/storyboard.json` and `resume`. Nothing is re-narrated;
+scenes newly added to the short are rendered in 9:16, the rest reuse their
+cached renders.
+
+**A short scene looks wrong after an engine change**
+Short scene renders in `<run>/short/scenes/` are cached by their spec, not by
+the engine code. Delete the `.mp4` files there and `resume` to re-render them.
+
+**"edited storyboard no longer fits" / a timeline error on resume**
+A run that already has a `storyboard.json` (resume, revise, improve) is never
+rewritten from scratch to fix its length. Make the edited narration a little
+shorter or longer and `resume` again. Check that `TARGET_DURATION_SECS`
+matches the one the run was made with.
 
 **Captions overlap the visuals in portrait**
 Captions sit in the lower quarter, above platform UI. Layouts keep that zone

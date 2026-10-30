@@ -48,9 +48,12 @@ Only narrated scenes are sent to ElevenLabs; chapter cards and visual beats are 
 | Variable | Default | Description |
 |---|---|---|
 | `TARGET_DURATION_SECS` | `300` | Exact length of every video (15–600). The word budget scales with it. From 120s up, scripts are written chapter by chapter. |
-| `ASPECT` | `landscape` | `landscape` (1920×1080) or `portrait` (1080×1920). Keep `landscape` for long videos: the vertical short is cut from it. |
-| `SHORTS` | `1` | Also cut a 9:16 short from every landscape video (from the chapter the writer picked) |
+| `ASPECT` | `landscape` | `landscape` (1920×1080) or `portrait` (1080×1920). Keep `landscape` for long videos: the vertical short is made alongside it. |
+| `SHORTS` | `1` | Also make a 9:16 short from every landscape video: the chapter the writer picked, its scenes rendered again natively in portrait |
 | `SHORT_MAX_SECS` | `59` | Upper bound for the short (15–60). The cut is trimmed at scene boundaries to fit. |
+| `AUTO_IMPROVE` | `1` | `story_animator improve` (run by the bot after every review) fixes a video that scores below the best earlier one; `0` turns it off (`--force` still runs it). See [LEARNING.md](LEARNING.md). |
+| `IMPROVE_TARGET` | `8.0` | Score a video must reach; the best earlier score is used when it's higher (capped at 9.5). |
+| `IMPROVE_ROUNDS` | `1` | Fix-and-re-review rounds per video (0–3). Each round re-narrates and re-renders only the scenes it changes. |
 | `RENDER_QUALITY` | `high` | `draft` 540p/15fps · `standard` 720p/30 · `high` 1080p/30 · `ultra` 1080p/60 |
 | `TRANSITION_SECS` | `0.5` | Crossfade length between scenes (0 = hard cuts) |
 | `MAX_SPEECH_TEMPO` | `1.15` | Maximum narration speed-up when the script runs long (1.0–1.3) |

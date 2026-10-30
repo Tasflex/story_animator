@@ -3,6 +3,10 @@
 Coordinates are Manim units. Landscape frames are 14.22 x 8; portrait frames
 are 8 x 14.22, so element sizes stay comparable across aspect ratios and
 layouts only have to decide *arrangement*, not scale.
+
+A spec may reserve a band at the top of the frame (`"reserve": {"top": f}`,
+a fraction of the frame height). The vertical short uses it for its hook
+title, which is burned in afterwards: layouts keep below `Stage.top`.
 """
 
 from __future__ import annotations
@@ -33,18 +37,34 @@ class Stage:
     width: float
     height: float
     portrait: bool
+    top_band: float = 0.0  # units reserved at the top (the short's hook title)
+    title_extra: float = 0.0  # how much taller than one line the scene heading is (content starts lower)
 
     @classmethod
-    def for_pixels(cls, px_w: int, px_h: int) -> "Stage":
+    def for_pixels(cls, px_w: int, px_h: int, reserve: dict | None = None) -> "Stage":
         portrait = px_h > px_w
         long_side = 8.0 * 16 / 9
-        if portrait:
-            return cls(width=8.0, height=long_side, portrait=True)
-        return cls(width=long_side, height=8.0, portrait=False)
+        w, h = (8.0, long_side) if portrait else (long_side, 8.0)
+        try:
+            top = float((reserve or {}).get("top", 0.0))
+        except (TypeError, ValueError):
+            top = 0.0
+        return cls(width=w, height=h, portrait=portrait, top_band=min(max(top, 0.0), 0.3) * h)
+
+    @classmethod
+    def for_spec(cls, spec: dict) -> "Stage":
+        return cls.for_pixels(int(spec.get("width", 1920)), int(spec.get("height", 1080)), spec.get("reserve"))
 
     # --- reserved regions -------------------------------------------------
     @property
+    def top(self) -> float:
+        """Nothing may be drawn above this y (the frame edge, or a reserved band)."""
+        return self.height / 2 - self.top_band
+
+    @property
     def title_y(self) -> float:
+        if self.top_band:
+            return self.top - 0.9
         return self.height / 2 - (1.25 if self.portrait else 0.8)
 
     @property
@@ -55,12 +75,11 @@ class Stage:
     @property
     def content_top(self) -> float:
         """Nothing may be drawn above this y when the scene has a title."""
-        return self.title_y - 0.6
+        return self.title_y - 0.6 - self.title_extra
 
     @property
     def content_center(self) -> np.ndarray:
-        top = self.title_y - 0.6
-        return np.array([0.0, (top + self.caption_top) / 2, 0.0])
+        return np.array([0.0, (self.content_top + self.caption_top) / 2, 0.0])
 
     @property
     def content_w(self) -> float:
@@ -68,7 +87,7 @@ class Stage:
 
     @property
     def content_h(self) -> float:
-        return (self.title_y - 0.6) - self.caption_top - 0.3
+        return self.content_top - self.caption_top - 0.3
 
 
 # ---------------------------------------------------------------------------

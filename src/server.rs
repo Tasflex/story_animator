@@ -93,6 +93,7 @@ async fn storyboard(State(c): State<Ctx>, Json(r): Json<StoryboardReq>) -> AppRe
             style,
             word_scale: 1.0,
             force: r.force,
+            lessons: &crate::lessons::prompt_block(&c.app.cfg).await,
         },
     )
     .await?;

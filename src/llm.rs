@@ -43,6 +43,8 @@ pub struct StoryRequest<'a> {
     pub word_scale: f64,
     /// Make the video even if the topic doesn't fit the channel niche.
     pub force: bool,
+    /// What earlier videos taught us (lessons::prompt_block), or "".
+    pub lessons: &'a str,
 }
 
 pub async fn write_storyboard(
@@ -295,6 +297,9 @@ fn user_prompt(req: &StoryRequest<'_>) -> String {
     }
     if let Some(t) = req.theme {
         s.push_str(&format!("Use theme: {t}\n"));
+    }
+    if !req.lessons.is_empty() {
+        s.push_str(&format!("\n{}\n", req.lessons));
     }
     s.push_str("Write the JSON now.");
     s
@@ -638,8 +643,9 @@ Return ONE JSON object, no prose: {{"scenes": [ {SCENE_SCHEMA} ]}}
     .unwrap_or_default();
     let base = format!(
         "Topic: {topic}\n{audience}Video plan:\n{plan}\n\nWrite chapter {num} of {n}: \"{name}\".\nGoal: {goal}\n\
-         Beats: {beats}\n{role}{short_note}\nUse theme \"{theme}\". Don't repeat what other chapters cover. \
-         Write the JSON now.",
+         Beats: {beats}\n{role}{short_note}\nUse theme \"{theme}\". Don't repeat what other chapters cover.\n\
+         {lessons}\nWrite the JSON now.",
+        lessons = req.lessons,
         topic = req.topic.trim(),
         audience = req.audience.map(|a| format!("Audience: {a}\n")).unwrap_or_default(),
         num = i + 1,
@@ -779,7 +785,7 @@ pub async fn write_scene_code(client: &Client, cfg: &Config, cat: &Catalog, r: &
         frame = if r.portrait { "portrait 8 x 14.2 units" } else { "landscape 14.2 x 8 units" },
         title = match r.title {
             Some(t) => format!("A heading \"{t}\" is already drawn at the top; don't add another title."),
-            None => "There is no heading; you may use the top of the frame.".into(),
+            None => "There is no heading; you may use the frame down from ctx.stage.top.".into(),
         },
         bg = r.theme.bg,
         bg2 = r.theme.bg2,
@@ -884,7 +890,39 @@ pub(crate) async fn complete(client: &Client, cfg: &Config, system: &str, user: 
     Err(AppError::Llm(errors.join(" | ")))
 }
 
+/// Like `complete`, with a PNG the model looks at too (a contact sheet, a
+/// thumbnail). Only Gemini takes images here; without it, or if the image call
+/// fails, this falls back to the text-only `complete`.
+pub(crate) async fn complete_vision(
+    client: &Client,
+    cfg: &Config,
+    system: &str,
+    user: &str,
+    png: &[u8],
+    json_mode: bool,
+) -> AppResult<String> {
+    if cfg.gemini_api_key.is_none() || matches!(cfg.llm_provider, LlmProvider::DeepSeek) {
+        return complete(client, cfg, system, user, json_mode).await;
+    }
+    use base64::Engine as _;
+    let parts = json!([
+        { "inline_data": { "mime_type": "image/png", "data": base64::engine::general_purpose::STANDARD.encode(png) } },
+        { "text": user }
+    ]);
+    match gemini_parts(client, cfg, system, parts, json_mode).await {
+        Ok(text) => Ok(text),
+        Err(e) => {
+            tracing::warn!(error = %e, "gemini vision call failed; retrying without the image");
+            complete(client, cfg, system, user, json_mode).await
+        }
+    }
+}
+
 async fn gemini(client: &Client, cfg: &Config, system: &str, user: &str, json_mode: bool) -> AppResult<String> {
+    gemini_parts(client, cfg, system, json!([{ "text": user }]), json_mode).await
+}
+
+async fn gemini_parts(client: &Client, cfg: &Config, system: &str, parts: Value, json_mode: bool) -> AppResult<String> {
     let key = cfg.gemini_api_key.as_deref().unwrap_or_default();
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
@@ -896,7 +934,7 @@ async fn gemini(client: &Client, cfg: &Config, system: &str, user: &str, json_mo
     }
     let body = json!({
         "systemInstruction": { "parts": [{ "text": system }] },
-        "contents": [{ "role": "user", "parts": [{ "text": user }] }],
+        "contents": [{ "role": "user", "parts": parts }],
         "generationConfig": generation
     });
     let data = post_json_with_retry(client, &url, &[("x-goog-api-key", key)], &body, "gemini").await?;

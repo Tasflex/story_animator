@@ -228,42 +228,28 @@ pub async fn burn_captions(cfg: &Config, master: &Path, subs: &Path, out: &Path)
     Ok(())
 }
 
-/// Where the landscape video sits inside the 1080x1920 short. The bottom of
-/// the landscape frame is reserved for captions (empty in the master), so it
-/// is cropped off and the panel gets the full width.
-pub const SHORT_PANEL_TOP: u32 = 600;
-pub const SHORT_PANEL_H: u32 = 534;
-const SHORT_KEEP: f64 = 0.88;
+/// The short's frame, in the 1080x1920 caption canvas (ASS scales it to the
+/// real resolution). Its scenes are rendered natively in 9:16 with this band
+/// at the top kept free for the hook title, and the portrait caption band
+/// (the bottom ~28%, `Stage.caption_top`) free for captions.
+pub const SHORT_TOP_BAND: u32 = 340;
+pub const SHORT_H: u32 = 1920;
 
 pub struct ShortInput<'a> {
+    /// The short's own clean master (portrait scenes, narration, music).
     pub master: &'a Path,
-    /// Segment of the master, in seconds.
-    pub start: f64,
     pub duration: f64,
     pub subtitles: &'a Path,
-    /// "#RRGGBB" for the hairlines framing the video.
-    pub accent: &'a str,
     pub out: &'a Path,
 }
 
-/// The vertical short, cut from the same master: a blurred, darkened copy
-/// fills the 9:16 frame, the landscape video sits full-width in the middle
-/// band, and the hook title, captions and call to action go around it.
+/// The vertical short: its natively rendered 9:16 master with the hook title,
+/// captions and call to action burned in, faded in and out.
 pub async fn make_short(cfg: &Config, inp: ShortInput<'_>) -> AppResult<()> {
     let d = inp.duration;
-    let accent = format!("0x{}", inp.accent.trim_start_matches('#'));
-    let (top, h) = (SHORT_PANEL_TOP, SHORT_PANEL_H);
     let f = format!(
-        "[0:v]split=2[b][f];\
-         [b]scale=-2:640,crop=360:640,boxblur=10:2,scale=1080:1920,setsar=1,eq=brightness=-0.12:saturation=1.15[bg];\
-         [f]crop=iw:trunc(ih*{SHORT_KEEP}/2)*2:0:0,scale=1080:{h},setsar=1[fg];\
-         [bg][fg]overlay=0:{top},\
-         drawbox=x=0:y={above}:w=1080:h=4:color={accent}@0.85:t=fill,\
-         drawbox=x=0:y={below}:w=1080:h=4:color={accent}@0.85:t=fill,\
-         {subs},fade=t=in:st=0:d=0.3,fade=t=out:st={fo:.3}:d=0.4,format=yuv420p[v];\
+        "[0:v]{subs},fade=t=in:st=0:d=0.3,fade=t=out:st={fo:.3}:d=0.4,format=yuv420p[v];\
          [0:a]afade=t=in:st=0:d=0.3,afade=t=out:st={ao:.3}:d=0.8[a]",
-        above = top - 4,
-        below = top + h,
         subs = subtitles_filter(cfg, inp.subtitles),
         fo = (d - 0.4).max(0.0),
         ao = (d - 0.8).max(0.0),
@@ -271,7 +257,7 @@ pub async fn make_short(cfg: &Config, inp: ShortInput<'_>) -> AppResult<()> {
     tokio::fs::write(inp.out.with_extension("filtergraph.txt"), &f).await?;
     let mut cmd = Command::new(&cfg.ffmpeg_bin);
     cmd.current_dir(&cfg.root)
-        .args(["-y", "-v", "error", "-ss", &format!("{:.4}", inp.start), "-t", &format!("{d:.4}"), "-i"])
+        .args(["-y", "-v", "error", "-i"])
         .arg(inp.master)
         .arg("-filter_complex")
         .arg(&f)
