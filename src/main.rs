@@ -14,13 +14,18 @@ mod config;
 mod custom;
 mod doctor;
 mod error;
+mod improve;
 mod jobs;
 mod kit;
+mod lessons;
 mod llm;
 mod media;
 mod niche;
+mod package;
 mod pipeline;
 mod render;
+mod review;
+mod revise;
 mod server;
 mod storyboard;
 mod subtitles;
@@ -95,6 +100,29 @@ enum Cmd {
         #[arg(long, short)]
         out: Option<PathBuf>,
     },
+    /// Self-review a finished run: score it, list its problems, and add what it
+    /// teaches to storage/LESSONS.md for every later video.
+    Review { run_id: String },
+    /// If a reviewed run scores below the best earlier video (or IMPROVE_TARGET),
+    /// fix what its review found and keep the result only if it scores higher.
+    Improve {
+        run_id: String,
+        /// Run even when AUTO_IMPROVE=0.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Write a finished run's title, description, tags and thumbnail
+    /// (docs/PACKAGING.md), into youtube.txt and thumbnail.png.
+    Package {
+        run_id: String,
+        /// Extra instructions, e.g. "the thumbnail should be about the pressure".
+        #[arg(long)]
+        notes: Option<String>,
+    },
+    /// Apply a change request to a finished run (packaging or scenes), re-rendering only what changed.
+    Revise { run_id: String, instruction: String },
+    /// Add the channel owner's feedback to storage/LESSONS.md for every later video.
+    Feedback { text: String },
     /// Start the HTTP API server.
     Serve {
         #[arg(long)]
@@ -143,6 +171,9 @@ struct GenerateArgs {
     /// Copy the finished video here (the short goes next to it as <name>_short.mp4).
     #[arg(long, short)]
     out: Option<PathBuf>,
+    /// Use this run id (storage/runs/<id>) instead of a random one.
+    #[arg(long)]
+    run_id: Option<String>,
 }
 
 #[tokio::main]
@@ -204,7 +235,7 @@ async fn finish(result: pipeline::RunResult, out: Option<PathBuf>) -> AppResult<
         path = o;
     }
     let short_line = match (&short, result.short_duration) {
-        (Some(p), Some(d)) => format!("\n  short:    {}  ({d:.1}s, 1080x1920)", p.display()),
+        (Some(p), Some(d)) => format!("\n  short:    {}  ({d:.1}s, {}x{} 9:16)", p.display(), result.height, result.width),
         _ => String::new(),
     };
     let yt_line = result.youtube.as_ref().map(|p| format!("\n  youtube:  {}", p.display())).unwrap_or_default();
@@ -314,6 +345,7 @@ async fn dispatch(cli: Cli, cfg: Config) -> AppResult<()> {
                     style,
                     word_scale: 1.0,
                     force,
+                    lessons: &lessons::prompt_block(&st.cfg).await,
                 },
             )
             .await?;
@@ -355,7 +387,7 @@ async fn dispatch(cli: Cli, cfg: Config) -> AppResult<()> {
                 force: a.force.then_some(true),
             };
             let st = state(cfg).await?;
-            let run_id = uuid::Uuid::new_v4().simple().to_string();
+            let run_id = a.run_id.unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
             let result = pipeline::run(&st, &run_id, req, cli_progress()).await?;
             finish(result, a.out).await
         }
@@ -370,6 +402,39 @@ async fn dispatch(cli: Cli, cfg: Config) -> AppResult<()> {
             )?;
             let result = pipeline::run(&st, &run_id, req, cli_progress()).await?;
             finish(result, out).await
+        }
+        Cmd::Review { run_id } => {
+            let st = state(cfg).await?;
+            let r = review::run(&st, &run_id).await?;
+            println!("{}", serde_json::to_string_pretty(&review::summary(&r))?);
+            Ok(())
+        }
+        Cmd::Improve { run_id, force } => {
+            if !cfg.auto_improve && !force {
+                println!("AUTO_IMPROVE=0: not improving (use --force to run it anyway)");
+                return Ok(());
+            }
+            let st = state(cfg).await?;
+            let o = improve::run(&st, &run_id).await?;
+            println!("{}", improve::summary(&o));
+            Ok(())
+        }
+        Cmd::Package { run_id, notes } => {
+            let st = state(cfg).await?;
+            let p = package::run(&st, &run_id, notes.as_deref()).await?;
+            println!("{}", serde_json::to_string_pretty(&package::summary(&p))?);
+            Ok(())
+        }
+        Cmd::Revise { run_id, instruction } => {
+            let st = state(cfg).await?;
+            println!("{}", revise::run(&st, &run_id, &instruction).await?);
+            Ok(())
+        }
+        Cmd::Feedback { text } => {
+            let client = reqwest::Client::builder().timeout(Duration::from_secs(300)).build()?;
+            lessons::add(&client, &cfg, &[format!("{} {}", lessons::OWNER, text.trim())]).await?;
+            println!("saved to {}", lessons::path(&cfg).display());
+            Ok(())
         }
         Cmd::Serve { addr } => {
             let addr = addr.unwrap_or_else(|| cfg.server_addr.clone());

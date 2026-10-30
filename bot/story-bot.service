@@ -1,0 +1,16 @@
+# The Telegram bot: render queue + delivery (docs/TELEGRAM.md).
+# Install: cp bot/story-bot.service /etc/systemd/system/ && systemctl enable --now story-bot
+[Unit]
+Description=Story Animator Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/root/story_animator
+ExecStart=/root/story_animator/venv/bin/python bot/telegram_bot.py
+Environment=PATH=/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

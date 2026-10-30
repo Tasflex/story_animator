@@ -341,7 +341,7 @@ def layout_process(ctx: Ctx):
         frame.clear_updaters()
         frame.move_to(c_start).set_width(w_start)
         if ctx.title_mob is not None:
-            for m in ctx.title_mob:
+            for m in ctx.title_mob:  # the children: the group itself is never added to the scene
                 m.set_z_index(7)
                 ctx.pin_to_frame(m)
         if abs(w_end - w_start) > 0.05 or np.linalg.norm(c_end - c_start) > 0.05:
@@ -567,7 +567,7 @@ def _note(ctx: Ctx, text: str):
     box = RoundedRectangle(corner_radius=0.22, width=t.width + 0.5, height=t.height + 0.3, stroke_width=0,
                            fill_color=th.accent, fill_opacity=0.95)
     pill = VGroup(box, t.move_to(box))
-    top = ctx.stage.content_top if ctx.s.get("title") else ctx.stage.height / 2 - 0.5
+    top = ctx.stage.content_top if ctx.s.get("title") else ctx.stage.top - 0.5
     pill.move_to([0, top - NOTE_BAND / 2 + 0.05, 0])
     pill.set_z_index(6)
     ctx.pin_to_frame(pill)

@@ -11,8 +11,9 @@
 //!   master.mp4        the clean render (no captions) both outputs are cut from
 //!   subtitles.ass     word-highlight captions for the long video
 //!   final.mp4         the 16:9 YouTube video
+//!   short/            the short's 9:16 scene renders, timeline and clean master
 //!   short.ass         captions + title for the short
-//!   short.mp4         the 9:16 short (<= SHORT_MAX_SECS), cut from the master
+//!   short.mp4         the 9:16 short (<= SHORT_MAX_SECS), its scenes rendered natively in portrait
 //!   youtube.txt       title, description, chapter timestamps, short title
 //!   result.json       summary
 //!
@@ -171,10 +172,13 @@ pub async fn run(state: &AppState, run_id: &str, req: VideoRequest, progress: Pr
 
     // ---- 1. storyboard, length-checked for free before any TTS ----------
     let sb_path = dir.join("storyboard.json");
-    let user_storyboard = req.storyboard.is_some();
+    // A given storyboard, or one already on disk (a resume, a revision or an
+    // auto-improvement), is never thrown away and rewritten from scratch: a
+    // revised script that misses the length fails loudly instead.
+    let fixed_script = req.storyboard.is_some() || sb_path.exists();
     let mut word_scale = 1.0;
     let mut board = obtain_storyboard(state, &req, &sb_path, aspect, word_scale, &progress).await?;
-    if !user_storyboard {
+    if !fixed_script {
         for _ in 0..2 {
             let (durations, words) = estimate_narration(&board);
             match timeline::fit(&durations, &words, &holds(&board), cfg.target_duration, cfg.transition_secs, cfg.max_tempo) {
@@ -200,12 +204,15 @@ pub async fn run(state: &AppState, run_id: &str, req: VideoRequest, progress: Pr
         let (files, durations, words) = narrate(state, &board, &dir, &voice, silent, &progress).await?;
         match timeline::fit(&durations, &words, &holds(&board), cfg.target_duration, cfg.transition_secs, cfg.max_tempo) {
             Ok(tl) => break (tl, files),
-            Err(e) if !user_storyboard && !rewritten => {
+            Err(e) if !fixed_script && !rewritten => {
                 rewritten = true;
                 word_scale *= rescale_for(&e);
                 report(&progress, "storyboard", 0.3, format!("narration missed the target ({e}); rewriting"));
                 let _ = tokio::fs::remove_file(&sb_path).await;
                 board = obtain_storyboard(state, &req, &sb_path, aspect, word_scale, &progress).await?;
+            }
+            Err(e) if fixed_script && req.storyboard.is_none() => {
+                return Err(AppError::Timeline(format!("edited storyboard no longer fits: {e}")));
             }
             Err(e) => return Err(AppError::Timeline(e.to_string())),
         }
@@ -295,20 +302,21 @@ pub async fn run(state: &AppState, run_id: &str, req: VideoRequest, progress: Pr
         })
         .collect();
     let clips: Vec<PathBuf> = jobs.iter().map(|j| j.out.clone()).collect();
+    let final_specs: Vec<serde_json::Value> = jobs.iter().map(|j| j.spec.clone()).collect();
     report(&progress, "render", 0.36, format!("rendering {n} scenes ({width}x{height} @ {fps}fps)"));
     let p2 = progress.clone();
     render::render_all(
         cfg,
         jobs,
         Arc::new(move |done, total| {
-            let frac = 0.36 + 0.46 * done as f32 / total as f32;
+            let frac = 0.36 + 0.42 * done as f32 / total as f32;
             report(&p2, "render", frac, format!("rendered scene {done}/{total}"));
         }),
     )
     .await?;
 
     // ---- 7. master, then the YouTube video ------------------------------
-    report(&progress, "compose", 0.83, "compositing transitions, narration and music");
+    report(&progress, "compose", 0.79, "compositing transitions, narration and music");
     let transitions: Vec<String> = board.scenes.iter().map(|s| s.transition.clone()).collect();
     let master = dir.join("master.mp4");
     media::compose(
@@ -326,7 +334,7 @@ pub async fn run(state: &AppState, run_id: &str, req: VideoRequest, progress: Pr
     .await?;
     let final_path = dir.join("final.mp4");
     if cfg.burn_subtitles {
-        report(&progress, "compose", 0.9, "burning captions");
+        report(&progress, "compose", 0.84, "burning captions");
         media::burn_captions(cfg, &master, &subs_path, &final_path).await?;
     } else {
         tokio::fs::copy(&master, &final_path).await?;
@@ -336,37 +344,23 @@ pub async fn run(state: &AppState, run_id: &str, req: VideoRequest, progress: Pr
         tracing::warn!(duration, target = cfg.target_duration, "final duration differs from target");
     }
 
-    // ---- 8. the vertical short, cut from the same master -----------------
-    let mut short_out = None;
-    if cfg.shorts && aspect == Aspect::Landscape {
-        match short_segment(&board, &timeline, cfg.short_max_secs) {
-            Some((range, start, end)) => {
-                report(&progress, "short", 0.94, format!("cutting a {:.1}s vertical short", end - start));
-                let title = board.short.as_ref().map(|s| s.title.as_str()).filter(|t| !t.is_empty()).unwrap_or(&board.title);
-                let ass = subtitles::build_short(&timeline, range, start, end, &ShortStyle {
-                    font: &cfg.subtitle_font,
-                    highlight: &theme.accent,
-                    title,
-                    cta: "Full video on the channel",
-                    captions_y: media::SHORT_PANEL_TOP + media::SHORT_PANEL_H + 70,
-                });
-                let short_subs = dir.join("short.ass");
-                tokio::fs::write(&short_subs, ass).await?;
-                let out = dir.join("short.mp4");
-                media::make_short(cfg, media::ShortInput {
-                    master: &master,
-                    start,
-                    duration: end - start,
-                    subtitles: &short_subs,
-                    accent: &theme.accent,
-                    out: &out,
-                })
-                .await?;
-                short_out = Some((out, end - start));
-            }
-            None => tracing::info!("storyboard picks no segment for a short; skipping it"),
-        }
-    }
+    // ---- 8. the vertical short, rendered natively in 9:16 -----------------
+    let short_out = if cfg.shorts && aspect == Aspect::Landscape {
+        make_short(state, &ShortJob {
+            dir: &dir,
+            board: &board,
+            timeline: &timeline,
+            specs: &final_specs,
+            voices: &voice_files,
+            music: music.as_deref(),
+            quality,
+            accent: &theme.accent,
+            progress: &progress,
+        })
+        .await?
+    } else {
+        None
+    };
     let youtube = dir.join("youtube.txt");
     tokio::fs::write(&youtube, youtube_text(&board, &timeline)).await?;
 
@@ -404,9 +398,132 @@ fn estimate_narration(board: &Storyboard) -> (Vec<f64>, Vec<Vec<Word>>) {
         .unzip()
 }
 
-/// The scenes and `[start, end)` seconds of the master that make the short:
-/// the storyboard's pick, minus leading/trailing silent scenes, trimmed at
-/// scene boundaries to fit `max` seconds (extended if very short).
+struct ShortJob<'a> {
+    dir: &'a Path,
+    board: &'a Storyboard,
+    timeline: &'a Timeline,
+    /// The landscape render specs, as rendered (custom code or fallback resolved).
+    specs: &'a [serde_json::Value],
+    voices: &'a [Option<PathBuf>],
+    music: Option<&'a Path>,
+    quality: Quality,
+    accent: &'a str,
+    progress: &'a ProgressFn,
+}
+
+/// The vertical short. Its scenes are rendered again in 9:16 by the engine's
+/// portrait layouts (same narration, word timings, seed and chain state), with
+/// a band left free at the top for the hook title, then composed with their
+/// narration and the music, and captioned. Nothing is cropped from the
+/// landscape video. Intermediates live in `<run>/short/`; scene renders are
+/// cached by spec like the long video's, and narration is reused, so a short
+/// costs render time but no TTS.
+async fn make_short(state: &AppState, job: &ShortJob<'_>) -> AppResult<Option<(PathBuf, f64)>> {
+    let cfg = &state.cfg;
+    let Some((range, start, end)) = short_segment(job.board, job.timeline, cfg.short_max_secs) else {
+        tracing::info!("storyboard picks no segment for a short; skipping it");
+        return Ok(None);
+    };
+    let (px_w, px_h, fps) = job.quality.dims();
+    let sdir = job.dir.join("short");
+    tokio::fs::create_dir_all(sdir.join("scenes")).await?;
+    let tl = short_timeline(job.timeline, range.clone(), start, end);
+    write_json(&sdir.join("timeline.json"), &tl).await?;
+    write_json(&sdir.join("short.json"), &json!({ "from": range.start, "to": range.end - 1, "start": start, "end": end }))
+        .await?;
+
+    let reserve = json!({ "top": media::SHORT_TOP_BAND as f64 / media::SHORT_H as f64 });
+    let mut specs: Vec<serde_json::Value> = job.specs[range.clone()]
+        .iter()
+        .map(|s| {
+            let mut s = s.clone();
+            s["width"] = json!(px_w);
+            s["height"] = json!(px_h);
+            s["reserve"] = reserve.clone();
+            if let Some(o) = s.as_object_mut() {
+                o.remove("custom_code");
+            }
+            s
+        })
+        .collect();
+    // Custom scenes were written for the landscape frame; the short gets its own portrait code.
+    let code = custom::prepare(state, &specs, &sdir).await;
+    for (k, s) in specs.iter_mut().enumerate() {
+        if s["scene"]["layout"] == "custom" {
+            match code.get(&k) {
+                Some(p) => s["custom_code"] = json!(p.to_string_lossy()),
+                None => *s = render::fallback_spec(s),
+            }
+        }
+    }
+    let k = specs.len();
+    report(job.progress, "short", 0.86, format!("rendering the short's {k} scenes in 9:16 ({px_w}x{px_h})"));
+    let jobs: Vec<SceneRender> = specs
+        .into_iter()
+        .enumerate()
+        .map(|(j, spec)| SceneRender {
+            index: range.start + j,
+            spec,
+            spec_path: sdir.join("scenes").join(format!("scene_{j:02}.json")),
+            out: sdir.join("scenes").join(format!("scene_{j:02}.mp4")),
+        })
+        .collect();
+    let clips: Vec<PathBuf> = jobs.iter().map(|j| j.out.clone()).collect();
+    let p2 = job.progress.clone();
+    render::render_all(
+        cfg,
+        jobs,
+        Arc::new(move |done, total| {
+            report(&p2, "short", 0.86 + 0.09 * done as f32 / total as f32, format!("rendered short scene {done}/{total}"));
+        }),
+    )
+    .await?;
+
+    report(job.progress, "short", 0.96, format!("composing the {:.1}s short", tl.total));
+    let transitions: Vec<String> = job.board.scenes[range.clone()].iter().map(|s| s.transition.clone()).collect();
+    let master = sdir.join("master.mp4");
+    media::compose(
+        cfg,
+        media::ComposeInput {
+            timeline: &tl,
+            clips: &clips,
+            voices: &job.voices[range.clone()],
+            transitions: &transitions,
+            music: job.music,
+            fps,
+            out: &master,
+        },
+    )
+    .await?;
+    let board = job.board;
+    let title = board.short.as_ref().map(|s| s.title.as_str()).filter(|t| !t.is_empty()).unwrap_or(&board.title);
+    let ass = subtitles::build_short(&tl, 0..k, 0.0, tl.total, &ShortStyle {
+        font: &cfg.subtitle_font,
+        highlight: job.accent,
+        title,
+        cta: "Full video on the channel",
+    });
+    let subs = job.dir.join("short.ass");
+    tokio::fs::write(&subs, ass).await?;
+    let out = job.dir.join("short.mp4");
+    media::make_short(cfg, media::ShortInput { master: &master, duration: tl.total, subtitles: &subs, out: &out }).await?;
+    Ok(Some((out, tl.total)))
+}
+
+/// The short's own timeline: `range` of the long one, re-based to start at 0
+/// and cut at `end - start` seconds.
+pub fn short_timeline(tl: &Timeline, range: Range<usize>, start: f64, end: f64) -> Timeline {
+    Timeline {
+        total: end - start,
+        tempo: tl.tempo,
+        transition: tl.transition,
+        scenes: tl.scenes[range].iter().map(|s| timeline::SceneTiming { start: s.start - start, ..s.clone() }).collect(),
+    }
+}
+
+/// The scenes and `[start, end)` seconds of the long timeline that make the
+/// short: the storyboard's pick, minus leading/trailing silent scenes, trimmed
+/// at scene boundaries to fit `max` seconds (extended if very short).
 pub fn short_segment(board: &Storyboard, tl: &Timeline, max: f64) -> Option<(Range<usize>, f64, f64)> {
     let pick = board.short.as_ref()?;
     let n = tl.scenes.len().min(board.scenes.len());
@@ -417,8 +534,7 @@ pub fn short_segment(board: &Storyboard, tl: &Timeline, max: f64) -> Option<(Ran
     while from < to && board.scenes[from].is_silent() {
         from += 1;
     }
-    // Skip the tail of the crossfade into the first scene; narration starts later.
-    let start = tl.scenes[from].start + if from > 0 { 0.2 } else { 0.0 };
+    let start = tl.scenes[from].start;
     let end = |t: usize| tl.scenes[t].start + tl.scenes[t].slot;
     while to > from && (end(to) - start > max || board.scenes[to].is_silent()) {
         to -= 1;
@@ -434,21 +550,33 @@ fn mmss(secs: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+/// "m:ss Name" for each chapter (YouTube needs at least three), or nothing.
+pub fn chapter_lines(board: &Storyboard, tl: &Timeline) -> Vec<String> {
+    if board.chapters.len() < 3 {
+        return Vec::new();
+    }
+    board
+        .chapters
+        .iter()
+        .enumerate()
+        .filter_map(|(k, name)| {
+            let i = board.scenes.iter().position(|sc| sc.chapter == Some(k))?;
+            let t = if k == 0 { 0.0 } else { tl.scenes.get(i)?.start };
+            Some(format!("{} {name}", mmss(t)))
+        })
+        .collect()
+}
+
 /// Title, description and chapter timestamps, ready to paste into YouTube.
+/// `story_animator package` replaces it with the full packaging (package.rs).
 fn youtube_text(board: &Storyboard, tl: &Timeline) -> String {
     let mut s = format!("{}\n\n", board.title);
     if let Some(d) = &board.description {
         let _ = writeln!(s, "{d}\n");
     }
-    if board.chapters.len() >= 3 {
-        s.push_str("Chapters\n");
-        for (k, name) in board.chapters.iter().enumerate() {
-            let first = board.scenes.iter().position(|sc| sc.chapter == Some(k));
-            if let Some(i) = first {
-                let t = if k == 0 { 0.0 } else { tl.scenes[i].start };
-                let _ = writeln!(s, "{} {name}", mmss(t));
-            }
-        }
+    let chapters = chapter_lines(board, tl);
+    if !chapters.is_empty() {
+        let _ = writeln!(s, "Chapters\n{}", chapters.join("\n"));
     }
     if let Some(sh) = board.short.as_ref().filter(|sh| !sh.title.is_empty()) {
         let _ = writeln!(s, "\nShort title: {}", sh.title);
@@ -503,6 +631,7 @@ async fn obtain_storyboard(
             return Err(AppError::BadRequest("topic too long (max 2000 chars)".into()));
         }
         report(progress, "storyboard", 0.02, "writing storyboard");
+        let lessons = crate::lessons::prompt_block(cfg).await;
         let sb = llm::write_storyboard(
             &state.client,
             cfg,
@@ -515,6 +644,7 @@ async fn obtain_storyboard(
                 style: req.style.as_deref().map(VisualStyle::parse).transpose()?.unwrap_or(cfg.style),
                 word_scale,
                 force: req.force.unwrap_or(false),
+                lessons: &lessons,
             },
         )
         .await?;
@@ -706,7 +836,11 @@ mod tests {
         let (range, start, end) = short_segment(&board, &tl, 59.0).unwrap();
         assert_eq!(range.start, 1, "starts after the silent chapter card");
         assert!(end - start <= 59.0 && end - start > 50.0, "{}", end - start);
-        assert!((start - 103.4).abs() < 1e-9);
+        assert!((start - 103.2).abs() < 1e-9, "the short is rendered fresh, so it starts on the scene");
+        let short = short_timeline(&tl, range.clone(), start, end);
+        assert_eq!(short.scenes.len(), range.len());
+        assert!(short.scenes[0].start.abs() < 1e-9 && (short.total - (end - start)).abs() < 1e-9);
+        assert!((short.scenes[1].start - 9.0).abs() < 1e-9);
     }
 
     #[test]

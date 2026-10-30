@@ -150,6 +150,13 @@ pub struct Config {
     pub custom_attempts: u32,
     pub subtitle_font: String,
 
+    /// Let `improve` (and the bot after each render) fix what the self-review found.
+    pub auto_improve: bool,
+    /// The score a video must reach, or the best earlier score if that is higher.
+    pub improve_target: f64,
+    /// Fix-and-re-review rounds per video.
+    pub improve_rounds: u32,
+
     pub server_addr: String,
     pub max_concurrent_jobs: usize,
     pub log_json: bool,
@@ -270,6 +277,9 @@ impl Config {
             custom_scenes: flag("CUSTOM_SCENES", true),
             custom_attempts: parse("CUSTOM_ATTEMPTS", 3u32)?.clamp(1, 6),
             subtitle_font: var_or("SUBTITLE_FONT", "Poppins"),
+            auto_improve: flag("AUTO_IMPROVE", true),
+            improve_target: parse("IMPROVE_TARGET", 8.0f64)?.clamp(1.0, 10.0),
+            improve_rounds: parse("IMPROVE_ROUNDS", 1u32)?.min(3),
             server_addr: var_or("SERVER_ADDR", "0.0.0.0:3000"),
             max_concurrent_jobs: parse("MAX_CONCURRENT_JOBS", 1usize)?.max(1),
             log_json: flag("LOG_JSON", false),

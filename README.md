@@ -10,7 +10,7 @@ That one command plans the video in chapters, writes the script, narrates it
 with an expressive voice, animates it scene by scene, and delivers:
 
 - `final.mp4`: **exactly 5:00**, 1920x1080, with chapters, word-highlight captions and quiet background music
-- `short.mp4`: a **59-second-or-less** 1080x1920 short cut from the *same* render, with a hook title and vertical captions
+- `short.mp4`: a **59-second-or-less** 1080x1920 short, its scenes **rendered natively in 9:16** (same script and narration), with a hook title and vertical captions
 - `youtube.txt`: title, description and chapter timestamps, ready to paste
 
 ---
@@ -36,7 +36,8 @@ records and true-scale comparisons.
 | **Exact length** | Every video lands on `TARGET_DURATION_SECS` (300s) to the frame. Narration is measured, pauses are spread, and a script that would run long or short is rewritten before any narration is paid for. |
 | **Expressive narration** | ElevenLabs `eleven_v4` with audio tags (`[curious]`, `[amazed]`, `[serious]`…) chosen per scene by the writer. Tags never show in captions. |
 | **Fewer TTS credits** | Silent scenes (chapter cards, visual beats where the animation speaks for itself) are never sent to ElevenLabs. Narration is cached per scene, so edits and re-runs only pay for what changed. `--silent` previews cost nothing. |
-| **One render, two formats** | A clean master is rendered once. Captions are burned onto it for YouTube, and the short is cut from it: the landscape frame sits full-width in a 9:16 canvas over a blurred fill, with the title above and captions below. No second render. |
+| **Two formats, both fully framed** | A clean 16:9 master gets captions burned in for YouTube. The short's scenes are rendered again in 9:16 by the portrait layouts, filling the whole frame (no crop, no blurred fill), with a header band for the hook title and a footer for captions that the animation never runs under. Narration is reused, so the short costs render time, not TTS credits. |
+| **Gets better every video** | Each video is self-reviewed (16:9 and the short) against the scorecard of earlier ones. If it scores below the best so far, the scenes at fault are fixed and re-reviewed, and the fix is kept only if it scores higher. What failed and what worked go into `storage/LESSONS.md` for the next video. See [docs/LEARNING.md](docs/LEARNING.md). |
 | **See how it works** | Most scenes are **working schematics**, not icon cards: the `process` layout builds the system from kit parts (tanks, valves, pumps, gears, pistons, lasers, ships…) joined by pipes, wires, rays or fibres, then runs it on the narrator's words. Valves open, water flows, levels rise, a ship floats up, rotors spin, the camera moves in on the part being explained. One diagram grows across a chapter (`continue`). `cross_section` cuts things open layer by layer. Icon-based layouts are capped at 20% of scenes. |
 | **A kit that grows** | When a video needs a part the kit doesn't have (a canal mule locomotive, a heat exchanger…), the AI draws it, it is sandbox-checked and test-run, and it is **saved to the kit library** for every later video. `story_animator kit` lists the parts. |
 | **Orchestrated visuals** | Each element appears as the narrator says its name, driven by word timestamps, and every scene shows something within about a second. |
@@ -58,7 +59,7 @@ records and true-scale comparisons.
                     │
                     ▼
                master.mp4 ──────────────────┬─► + captions ─────────────────► final.mp4   (16:9, 5:00)
-                                             └─► segment ─► 9:16 reframe ────► short.mp4   (≤ 59s)
+                                             └─► short's scenes rendered in 9:16 ─► short.mp4   (≤ 59s)
 ```
 
 The LLM mostly writes **data**: a structured storyboard (which parts, how
@@ -155,6 +156,9 @@ See [docs/API.md](docs/API.md).
 | [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every `.env` setting |
 | [docs/API.md](docs/API.md) | HTTP endpoints |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common problems and fixes |
+| [docs/PACKAGING.md](docs/PACKAGING.md) | Rules for thumbnails, titles, descriptions and tags, and the thumbnail command |
+| [docs/LEARNING.md](docs/LEARNING.md) | How each video's self-review and your feedback make the next one better (`storage/LESSONS.md`) |
+| [docs/TELEGRAM.md](docs/TELEGRAM.md) | The Telegram bot: daily render queue, delivery, and changes by chat |
 
 ## Project layout
 
@@ -174,7 +178,7 @@ storage/runs/        One folder per generated video (git-ignored)
 A five-minute video uses about 8–15 LLM calls (outline, chapters, repairs,
 custom scenes) and about 3,000–3,500 characters of ElevenLabs TTS: roughly
 550–600 spoken words, since chapter cards and visual beats are silent. The
-short reuses the same narration, so it costs nothing extra. `--silent` and
+short reuses the same narration, so it costs no TTS (only render time, plus an LLM call per custom scene in it). `--silent` and
 re-runs of unchanged scenes cost nothing. Music is generated once for the
 library (`story_animator music`); ElevenLabs bills music separately from TTS
 characters.

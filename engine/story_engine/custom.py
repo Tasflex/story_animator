@@ -130,6 +130,7 @@ THE ctx API
   ctx.stage.content_center                 np.array — centre of the free area (below the title)
   ctx.stage.content_w, ctx.stage.content_h usable width / height. Keep everything inside this box.
   ctx.stage.content_top                    y above which nothing may be drawn when there is a heading
+  ctx.stage.top                            y above which NOTHING may be drawn, heading or not
   ctx.stage.caption_top                    y below which NOTHING may be drawn (captions live there)
   ctx.stage.portrait                       bool
   ctx.duration                             seconds this scene lasts

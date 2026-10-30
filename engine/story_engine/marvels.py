@@ -144,8 +144,10 @@ def layout_chapter(ctx: Ctx):
         icon_grp = VGroup(_halo(ctx, icon), icon)
         parts.submobjects.insert(0, icon_grp)
     parts.arrange(DOWN, buff=0.42)
-    fit(parts, st.content_w, st.height - 2.6)
+    fit(parts, st.content_w, st.height - 2.6 - st.top_band)
     center = np.array([0.0, 0.25 if not st.portrait else 0.6, 0.0])
+    if st.top_band:
+        center = np.array([0.0, (st.top + st.caption_top) / 2, 0.0])
     parts.move_to(center)
     ghost.move_to(head.get_center() + RIGHT * (0.5 if not st.portrait else 0.2))
     ctx.float(ghost, 0.05, 0.6)
@@ -176,12 +178,12 @@ def layout_fun_fact(ctx: Ctx):
     fact = " ".join(str(c.get("fact") or ctx.s.get("title") or "").split())[:140]
     hl = {w.strip(".,!?;:\"'").lower() for w in str(c.get("highlight") or "").split() if w.strip()}
 
-    icon = ctx.icon(c.get("icon") or "lightbulb", size=2.6 if not st.portrait else 2.3)
+    icon = ctx.icon(c.get("icon") or "lightbulb", size=2.6 if not st.portrait else 1.9)
     halo = _halo(ctx, icon)
     hero = VGroup(halo, icon)
     badge = _pill(ctx, _spaced(kind), color=th.accent3, size=22)
-    block, word_mobs, words = _word_lines(ctx, fact, size=50 if not st.portrait else 44,
-                                          max_chars=22 if not st.portrait else 16)
+    block, word_mobs, words = _word_lines(ctx, fact, size=50 if not st.portrait else 48,
+                                          max_chars=22 if not st.portrait else 20)
     text_col = VGroup(badge, block).arrange(DOWN, buff=0.45, aligned_edge=LEFT)
     if st.portrait:
         whole = VGroup(hero, text_col).arrange(DOWN, buff=0.7)
@@ -229,7 +231,7 @@ def layout_scale(ctx: Ctx):
     cw = min(1.3, slot * 0.42)
     x0 = cc[0] - W / 2
     cap_h = min(0.85, slot * 0.4)
-    top_lim = (st.content_top if ctx.s.get("title") else st.height / 2 - 0.6) - 0.1
+    top_lim = (st.content_top if ctx.s.get("title") else st.top - 0.6) - 0.1
     low = [k for k, v in enumerate(vals) if v < 0.55 * vmax]
     # Room above the tallest column for its icon and value label (and the
     # callout, when no short column leaves space for it beside the tall ones).

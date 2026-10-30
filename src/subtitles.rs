@@ -86,28 +86,30 @@ pub fn build(tl: &Timeline, style: &CaptionStyle<'_>) -> String {
     s
 }
 
-/// Layout of the vertical short (1080x1920): hook title on top, the landscape
-/// video in the middle band, captions below it, a call to action at the end.
+/// Text of the vertical short (1080x1920), whose scenes are rendered in 9:16:
+/// the hook title in the band the scenes leave free at the top
+/// (`media::SHORT_TOP_BAND`), captions in the portrait caption band at the
+/// bottom, and a call to action under them at the end. The bottom ~300px stay
+/// clear for the Shorts player's own overlay.
 pub struct ShortStyle<'a> {
     pub font: &'a str,
     pub highlight: &'a str,
     pub title: &'a str,
     pub cta: &'a str,
-    /// Top edge of the caption block (px).
-    pub captions_y: u32,
 }
 
-/// Captions for `scenes`, cut out of the long timeline at `[start, end)` and
-/// re-timed to start at zero, for the vertical short.
+/// Captions for `scenes` of `tl` at `[start, end)`, re-timed to start at zero.
 pub fn build_short(tl: &Timeline, scenes: std::ops::Range<usize>, start: f64, end: f64, st: &ShortStyle<'_>) -> String {
     let hl = ass_color(st.highlight);
     let mut s = header(1080, 1920, &[
-        format!("Style: Title,{},88,&H00FFFFFF,&H00FFFFFF,&H00101010,&H00000000,-1,0,0,0,100,100,0,0,1,5,0,8,70,70,270,1", st.font),
+        // A translucent box (BorderStyle 3) keeps the hook readable over any backdrop.
         format!(
-            "Style: Caption,{},74,&H00FFFFFF,&H00FFFFFF,&H00101010,&H90000000,-1,0,0,0,100,100,0,0,1,5,1.5,8,60,60,{},1",
-            st.font, st.captions_y
+            "Style: Title,{},{},&H00FFFFFF,&H00FFFFFF,&H50000000,&H00000000,-1,0,0,0,100,100,0,0,3,16,0,8,70,70,90,1",
+            st.font,
+            hook_size(st.title)
         ),
-        format!("Style: Cta,{},54,&H00FFFFFF,&H00FFFFFF,&H00101010,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,2,70,70,230,1", st.font),
+        format!("Style: Caption,{},112,&H00FFFFFF,&H00FFFFFF,&H00101010,&H90000000,-1,0,0,0,100,100,0,0,1,7,2,2,50,50,380,1", st.font),
+        format!("Style: Cta,{},60,&H00FFFFFF,&H00FFFFFF,&H00101010,&H00000000,-1,0,0,0,100,100,0,0,1,4,0,2,70,70,280,1", st.font),
     ]);
     let dur = end - start;
     if !st.title.is_empty() {
@@ -116,8 +118,23 @@ pub fn build_short(tl: &Timeline, scenes: std::ops::Range<usize>, start: f64, en
     if !st.cta.is_empty() && dur > 6.0 {
         let _ = writeln!(s, "Dialogue: 1,{},{},Cta,,0,0,0,,{{\\fad(250,0)\\c{hl}&}}{}", ts(dur - 3.5), ts(dur), clean(st.cta));
     }
-    caption_events(&mut s, tl, scenes, start, end, 20, &hl);
+    caption_events(&mut s, tl, scenes, start, end, 18, &hl);
     s
+}
+
+/// The largest hook-title size that keeps the title to two lines, so it stays
+/// inside the short's top band (90px margin + 2 lines + box < SHORT_TOP_BAND).
+fn hook_size(title: &str) -> u32 {
+    let n = title.chars().count() as f64;
+    for size in [100u32, 92, 84, 76, 68] {
+        // libass draws Poppins Bold ~0.30 x size px per character (measured);
+        // 940px between the margins, with slack for word wrapping.
+        let per_line = 940.0 / (0.30 * size as f64) * 0.85;
+        if n <= per_line * 2.0 {
+            return size;
+        }
+    }
+    60
 }
 
 /// Word-highlight caption events for `scenes`, shifted by `-offset` and kept
@@ -191,7 +208,7 @@ mod tests {
             words: vec![Word { w: "hello".into(), s: 1.0, e: 1.5 }, Word { w: "world.".into(), s: 1.6, e: 2.2 }],
         };
         let tl = Timeline { total: 30.0, tempo: 1.0, transition: 0.5, scenes: vec![scene(0.0), scene(10.0), scene(20.0)] };
-        let st = ShortStyle { font: "Poppins", highlight: "#38BDF8", title: "Big {hook}", cta: "Full video", captions_y: 1215 };
+        let st = ShortStyle { font: "Poppins", highlight: "#38BDF8", title: "Big {hook}", cta: "Full video" };
         let ass = build_short(&tl, 1..2, 10.0, 20.0, &st);
         assert!(ass.contains("Dialogue: 0,0:00:01.00,"), "{ass}");
         assert!(!ass.contains("0:00:11."), "scene 2 words must not leak in");

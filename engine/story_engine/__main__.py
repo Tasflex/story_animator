@@ -4,6 +4,9 @@
     python -m story_engine catalog            # JSON vocabulary for the storyboard prompt
     python -m story_engine check              # environment self-test (JSON)
     python -m story_engine validate --spec scene.json   # dry-run a custom scene (JSON result)
+    python -m story_engine branding --out storage/branding   # YouTube banner + profile picture
+    python -m story_engine thumbnail --run storage/runs/<id> --scene 12 --lines "A|B" --highlight A
+    python -m story_engine contact-sheet --run storage/runs/<id> --out contact.png   # every scene, for review
 """
 
 from __future__ import annotations
@@ -234,7 +237,41 @@ def main(argv=None) -> int:
     vp = sub.add_parser("validate-part", help="sandbox-check and dry-run an AI-written kit part file")
     vp.add_argument("--file", required=True)
     vp.add_argument("--name", default=None)
+    b = sub.add_parser("branding", help="render the YouTube banner and profile picture")
+    b.add_argument("--out", required=True)
+    t = sub.add_parser("thumbnail", help="render a 1280x720 YouTube thumbnail for a finished run")
+    t.add_argument("--run", required=True, help="storage/runs/<id>")
+    t.add_argument("--scene", type=int, required=True, help="scene whose frame is the background")
+    t.add_argument("--lines", required=True, help="text lines separated by |")
+    t.add_argument("--highlight", default=None, help="the line drawn big, in the accent colour")
+    t.add_argument("--at", type=float, default=0.75, help="how far through the scene to grab the frame")
+    t.add_argument("--crop", default="0.1,0.18,0.9,0.92", help="x0,y0,x1,y1 of the frame, as fractions")
+    t.add_argument("--art", choices=["right", "bottom", "inset"], default="right", help="where the frame goes")
+    t.add_argument("--pointer", default=None, help="x,y in the cropped frame (fractions) to ring and point at")
+    t.add_argument("--backdrop", default=None, help="drawn scene behind the frame (see backdrops.py)")
+    cs = sub.add_parser("contact-sheet", help="one labelled frame per scene of a run, in a grid")
+    cs.add_argument("--run", required=True)
+    cs.add_argument("--out", required=True)
     args = p.parse_args(argv)
+    if args.cmd == "contact-sheet":
+        from .thumbnail import contact_sheet
+
+        print(json.dumps({"file": str(contact_sheet(Path(args.run), Path(args.out)))}))
+        return 0
+    if args.cmd == "thumbnail":
+        from .thumbnail import render
+
+        crop = tuple(float(v) for v in args.crop.split(","))
+        pointer = tuple(float(v) for v in args.pointer.split(",")) if args.pointer else None
+        out = render(Path(args.run), args.scene, args.lines.split("|"), args.highlight, args.at, crop, args.art,
+                     pointer, args.backdrop)
+        print(json.dumps({"file": str(out)}))
+        return 0
+    if args.cmd == "branding":
+        from .branding import render_all
+
+        print(json.dumps({"files": [str(f) for f in render_all(Path(args.out))]}))
+        return 0
     if args.cmd == "validate":
         return cmd_validate(args)
     if args.cmd == "validate-part":
