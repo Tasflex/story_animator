@@ -65,6 +65,8 @@ async fn render_one(cfg: &Config, job: &SceneRender) -> AppResult<()> {
     match engine_render(cfg, &job.spec_path, &job.out).await {
         Ok(()) => {
             tracing::info!(scene = job.index, secs = started.elapsed().as_secs_f32(), "scene rendered");
+            // A fallback from an earlier attempt no longer applies.
+            let _ = tokio::fs::remove_file(job.spec_path.with_extension("fallback.json")).await;
             Ok(())
         }
         Err(e) => {

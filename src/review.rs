@@ -161,6 +161,10 @@ async fn measure(state: &AppState, board: &Storyboard, timeline: &Value, dir: &P
         icon_share: share(&ICON_LED),
         ..Default::default()
     };
+    // The kit as it is now: parts grown earlier in this same process (by a revise or an
+    // improve) are missing from the catalog loaded at startup.
+    let fresh = crate::catalog::Catalog::load(&state.cfg).await.ok();
+    let catalog = fresh.as_ref().unwrap_or(&state.catalog);
     let short_from = read::<Value>(&dir.join("short").join("short.json")).await.ok().and_then(|v| v["from"].as_u64());
     let short_from = short_from.map(|f| f as usize);
     for (i, s) in board.scenes.iter().enumerate() {
@@ -168,18 +172,18 @@ async fn measure(state: &AppState, board: &Storyboard, timeline: &Value, dir: &P
         if s.layout == "process" {
             for p in c["parts"].as_array().into_iter().flatten() {
                 let kind = normalize_kind(p["kind"].as_str().unwrap_or(""));
-                if !kind.is_empty() && !state.catalog.has_part(&kind) && !m.placeholder_parts.contains(&kind) {
+                if !kind.is_empty() && !catalog.has_part(&kind) && !m.placeholder_parts.contains(&kind) {
                     m.placeholder_parts.push(kind);
                 }
             }
         }
         let scenes = dir.join("scenes");
-        if scenes.join(format!("scene_{i:02}.fallback.json")).exists() {
+        if fell_back(&scenes.join(format!("scene_{i:02}.json"))).await {
             m.render_fallbacks.push(i);
         }
         if let Some(from) = short_from
             && i >= from
-            && dir.join("short").join("scenes").join(format!("scene_{:02}.fallback.json", i - from)).exists()
+            && fell_back(&dir.join("short").join("scenes").join(format!("scene_{:02}.json", i - from))).await
         {
             m.short_fallbacks.push(i);
         }
@@ -212,6 +216,12 @@ async fn measure(state: &AppState, board: &Storyboard, timeline: &Value, dir: &P
         }
     }
     m
+}
+
+/// Whether a scene's latest render used its safe fallback: render.rs then replaces
+/// the spec file with the word "fallback" (a later successful render rewrites it).
+async fn fell_back(spec: &Path) -> bool {
+    tokio::fs::read_to_string(spec).await.is_ok_and(|s| s.trim() == "fallback")
 }
 
 /// One line per scene: index, layout, chapter, title, narration and a clipped summary of its content.
