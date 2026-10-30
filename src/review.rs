@@ -95,6 +95,9 @@ for phones, with the hook title burned into the top band and captions into the b
   that don't show what the narration says.
 - In the script: a hook in the first sentence, whether every middle chapter shows the mechanism working,
   whether each wow lands, pacing, and numbers that may be wrong or can't be checked.
+- Silent scenes (empty narration, a 3-6s hold, usually right after a reveal) are deliberate visual beats
+  that let the animation land and save narration; one per chapter is by design. Don't list them as audio
+  gaps and don't ask for narration in them. Do list a silent scene whose frame is empty or broken.
 - In the SHORT frames: anything cut off, too small to read on a phone, or overlapping the hook title or the
   captions; empty frames; whether the first frame hooks.
 - The measured metrics: placeholder_parts, render_fallbacks, custom_failed and short_fallbacks are visible
